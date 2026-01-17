@@ -1,2 +1,3 @@
 httpx
 gradio
+weaviate-client>=4.0

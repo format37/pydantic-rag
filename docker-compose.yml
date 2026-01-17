@@ -18,6 +18,25 @@ services:
     ports:
       - "11434:11434"
 
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:latest
+    container_name: weaviate
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: 25
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+      ENABLE_MODULES: 'text2vec-ollama,generative-ollama'
+      CLUSTER_HOSTNAME: 'node1'
+    volumes:
+      - ./data/weaviate:/var/lib/weaviate
+    networks:
+      - rag-network
+    depends_on:
+      - ollama
+
   app:
     build:
       context: .
@@ -25,10 +44,12 @@ services:
     container_name: rag-app
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
+      - WEAVIATE_URL=http://weaviate:8080
       - EMBED_MODEL=nomic-embed-text
       - CHAT_MODEL=llama3.2
     depends_on:
       - ollama
+      - weaviate
     networks:
       - rag-network
     ports:
