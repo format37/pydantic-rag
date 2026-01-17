@@ -1,2 +1,6 @@
 data/
 prototypes/
+scripts/
+.git/
+.gitignore
+*.md

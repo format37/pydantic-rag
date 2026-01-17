@@ -18,6 +18,22 @@ services:
     ports:
       - "11434:11434"
 
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rag-app
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - EMBED_MODEL=nomic-embed-text
+      - CHAT_MODEL=llama3.2
+    depends_on:
+      - ollama
+    networks:
+      - rag-network
+    ports:
+      - "7860:7860"
+
 networks:
   rag-network:
     driver: bridge
