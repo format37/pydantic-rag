@@ -1,0 +1,23 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    entrypoint: ["/bin/bash", "/scripts/ollama-entrypoint.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ./data/ollama:/root/.ollama
+      - ./scripts/ollama-entrypoint.sh:/scripts/ollama-entrypoint.sh:ro
+    networks:
+      - rag-network
+    ports:
+      - "11434:11434"
+
+networks:
+  rag-network:
+    driver: bridge
