@@ -73,60 +73,102 @@ def embed_text(text: str) -> str:
         return f"Error: {e}"
 
 
-async def rag_chat(message: str, history: list) -> tuple[list, str]:
-    """Gradio handler for RAG-powered chat."""
-    if not message.strip():
-        return history, ""
+async def rag_chat(
+    message: str,
+    history: list,
+    message_history: list,
+    rag_mode: str,
+) -> tuple[list, str, list, str]:
+    """Gradio handler for RAG-powered chat with conversation memory.
 
-    # Add user message
+    Args:
+        message: User's input message.
+        history: Gradio chatbot display history.
+        message_history: Pydantic AI message history for conversation memory.
+        rag_mode: RAG mode selection ("Auto", "Force", "Disabled").
+
+    Returns:
+        Tuple of (updated history, cleared input, updated message_history, token info).
+    """
+    if not message.strip():
+        return history, "", message_history, ""
+
+    # Add user message to display history
     history.append({"role": "user", "content": message})
 
     try:
-        # Get Weaviate client
+        # Get Weaviate client (still needed for Auto/Force modes)
         client = get_weaviate_client()
-        if client is None:
-            history.append({
-                "role": "assistant",
-                "content": "Error: Could not connect to Weaviate. Please check the connection."
-            })
-            return history, ""
+        rag_mode_lower = rag_mode.lower()
 
-        # Check if collection exists
-        try:
-            collections = client.collections.list_all()
-            if "Document" not in [c for c in collections]:
+        # Only check Weaviate connection for RAG-enabled modes
+        if rag_mode_lower != "disabled":
+            if client is None:
                 history.append({
                     "role": "assistant",
-                    "content": "Error: Document collection not found. Please ingest documents first."
+                    "content": "Error: Could not connect to Weaviate. Please check the connection."
                 })
-                return history, ""
-        except Exception as e:
-            history.append({
-                "role": "assistant",
-                "content": f"Error checking collections: {e}"
-            })
-            return history, ""
+                return history, "", message_history, ""
 
-        # Create dependencies and run agent
+            # Check if collection exists
+            try:
+                collections = client.collections.list_all()
+                if "Document" not in [c for c in collections]:
+                    history.append({
+                        "role": "assistant",
+                        "content": "Error: Document collection not found. Please ingest documents first."
+                    })
+                    return history, "", message_history, ""
+            except Exception as e:
+                history.append({
+                    "role": "assistant",
+                    "content": f"Error checking collections: {e}"
+                })
+                return history, "", message_history, ""
+
+        # Create dependencies and get agent for the selected mode
         deps = RAGDeps(weaviate_client=client, collection_name="Document")
-        agent = get_agent()
+        agent = get_agent(rag_mode_lower)
 
         start = time.time()
-        result = await agent.run(message, deps=deps)
+        result = await agent.run(
+            message,
+            deps=deps,
+            message_history=message_history,
+        )
         elapsed = time.time() - start
+
+        # Update message history for conversation memory
+        new_message_history = result.all_messages()
+
+        # Track token usage
+        usage = result.usage()
+        total_tokens = usage.total_tokens if usage.total_tokens else (
+            (usage.request_tokens or 0) + (usage.response_tokens or 0)
+        )
+
+        # Build response with timing info
+        response_text = f"{result.output}\n\n_({elapsed:.2f}s)_"
+
+        # Add token warning if approaching limit (8K context for llama3.2)
+        token_info = f"Tokens: {total_tokens:,}"
+        if total_tokens > 6000:
+            response_text += "\n\n⚠️ _Approaching token limit. Consider resetting the conversation._"
+            token_info += " ⚠️"
 
         history.append({
             "role": "assistant",
-            "content": f"{result.output}\n\n_({elapsed:.2f}s)_"
+            "content": response_text
         })
+
+        return history, "", new_message_history, token_info
 
     except Exception as e:
         history.append({
             "role": "assistant",
             "content": f"Error: {e}"
         })
-
-    return history, ""
+        return history, "", message_history, ""
 
 
 def check_ollama_status() -> str:
@@ -188,6 +230,25 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
 
     with gr.Tab("RAG Chat"):
         gr.Markdown(f"Chat with documents using **{CHAT_MODEL}** and hybrid search")
+
+        # Session state for Pydantic AI message history (per-user session isolation)
+        message_history_state = gr.State(value=[])
+
+        # RAG mode selector
+        with gr.Row():
+            rag_mode = gr.Radio(
+                choices=["Auto", "Force", "Disabled"],
+                value="Auto",
+                label="RAG Mode",
+                info="Auto: Agent decides | Force: Always search | Disabled: Plain chat",
+            )
+            token_display = gr.Textbox(
+                label="Token Usage",
+                value="",
+                interactive=False,
+                scale=1,
+            )
+
         chatbot = gr.Chatbot(height=400)
         msg_input = gr.Textbox(
             label="Message",
@@ -195,10 +256,21 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
             show_label=False,
         )
         with gr.Row():
-            clear_btn = gr.Button("Clear Chat")
+            reset_btn = gr.Button("Reset Chat", variant="secondary")
 
-        msg_input.submit(rag_chat, inputs=[msg_input, chatbot], outputs=[chatbot, msg_input])
-        clear_btn.click(lambda: ([], ""), outputs=[chatbot, msg_input])
+        # Reset clears chatbot display, input, message history, and token display
+        def reset_chat():
+            return [], "", [], ""
+
+        msg_input.submit(
+            rag_chat,
+            inputs=[msg_input, chatbot, message_history_state, rag_mode],
+            outputs=[chatbot, msg_input, message_history_state, token_display],
+        )
+        reset_btn.click(
+            reset_chat,
+            outputs=[chatbot, msg_input, message_history_state, token_display],
+        )
 
     with gr.Tab("Embedding Test"):
         gr.Markdown(f"Generate embeddings using **{EMBED_MODEL}**")
