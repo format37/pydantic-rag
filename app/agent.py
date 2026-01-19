@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import weaviate
 from pydantic_ai import Agent, RunContext
+from weaviate.classes.query import Filter
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.ollama import OllamaProvider
 
@@ -52,6 +53,7 @@ class RAGDeps:
     # Configurable retrieval parameters
     num_chunks: int = 5  # Number of chunks to retrieve
     chunk_content_size: int = 500  # Max chars to show per chunk
+    name_filter: list[str] | None = None  # Filter by document set names
 
 
 def create_weaviate_client() -> weaviate.WeaviateClient:
@@ -64,6 +66,13 @@ def create_weaviate_client() -> weaviate.WeaviateClient:
         grpc_port=50051,
         grpc_secure=False,
     )
+
+
+def get_available_names(client: weaviate.WeaviateClient) -> list[str]:
+    """Fetch distinct document set names from Weaviate."""
+    collection = client.collections.get("Document")
+    result = collection.aggregate.over_all(group_by="name")
+    return sorted([group.grouped_by.value for group in result.groups if group.grouped_by.value])
 
 
 def create_agent(rag_mode: str = "auto") -> Agent[RAGDeps, str]:
@@ -111,11 +120,17 @@ def create_agent(rag_mode: str = "auto") -> Agent[RAGDeps, str]:
             try:
                 collection = ctx.deps.weaviate_client.collections.get(ctx.deps.collection_name)
 
+                # Build filter if document set names are specified
+                where_filter = None
+                if ctx.deps.name_filter:
+                    where_filter = Filter.by_property("name").contains_any(ctx.deps.name_filter)
+
                 response = collection.query.hybrid(
                     query=query,
                     alpha=0.5,  # Balance between keyword (0) and vector (1) search
                     limit=ctx.deps.num_chunks,
                     return_metadata=["score"],
+                    filters=where_filter,
                 )
 
                 if not response.objects:

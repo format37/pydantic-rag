@@ -7,7 +7,7 @@ import time
 import gradio as gr
 import httpx
 
-from agent import RAGDeps, create_weaviate_client, get_agent
+from agent import RAGDeps, create_weaviate_client, get_agent, get_available_names
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://weaviate:8080")
@@ -38,6 +38,17 @@ def close_weaviate_client():
         except Exception:
             pass
         _weaviate_client = None
+
+
+def fetch_document_names() -> list[str]:
+    """Fetch available document set names from Weaviate."""
+    try:
+        client = get_weaviate_client()
+        if client and client.is_ready():
+            return get_available_names(client)
+    except Exception:
+        pass
+    return []
 
 
 def get_embedding(text: str) -> tuple[list[float], float]:
@@ -80,6 +91,7 @@ async def rag_chat(
     rag_mode: str,
     num_chunks: int,
     chunk_content_size: int,
+    name_filter: list[str],
 ) -> tuple[list, str, list, str]:
     """Gradio handler for RAG-powered chat with conversation memory.
 
@@ -90,6 +102,7 @@ async def rag_chat(
         rag_mode: RAG mode selection ("Auto", "Force", "Disabled").
         num_chunks: Number of chunks to retrieve from vector DB.
         chunk_content_size: Max characters to show per chunk.
+        name_filter: List of document set names to filter by (empty = all).
 
     Returns:
         Tuple of (updated history, cleared input, updated message_history, token info).
@@ -136,6 +149,7 @@ async def rag_chat(
             collection_name="Document",
             num_chunks=int(num_chunks),
             chunk_content_size=int(chunk_content_size),
+            name_filter=name_filter if name_filter else None,
         )
         agent = get_agent(rag_mode_lower)
 
@@ -221,6 +235,12 @@ def check_weaviate_status() -> str:
         return f"Weaviate: Error - {e}"
 
 
+def refresh_names():
+    """Refresh document set names from Weaviate for the CheckboxGroup."""
+    names = fetch_document_names()
+    return gr.CheckboxGroup(choices=names, value=[])
+
+
 # Build Gradio interface
 with gr.Blocks(title="Pydantic RAG Demo") as demo:
     gr.Markdown("# Pydantic RAG Demo")
@@ -278,6 +298,16 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
                     info="Max characters to show per chunk (increase for larger context models)",
                 )
 
+            # Document set filter
+            with gr.Row():
+                name_filter = gr.CheckboxGroup(
+                    choices=[],  # Populated dynamically
+                    value=[],    # None selected = search all
+                    label="Document Sets",
+                    info="Select which document sets to search (empty = all)",
+                )
+                refresh_names_btn = gr.Button("Refresh List", size="sm", scale=0)
+
         chatbot = gr.Chatbot(height=400)
         msg_input = gr.Textbox(
             label="Message",
@@ -293,13 +323,14 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
 
         msg_input.submit(
             rag_chat,
-            inputs=[msg_input, chatbot, message_history_state, rag_mode, num_chunks_slider, chunk_size_slider],
+            inputs=[msg_input, chatbot, message_history_state, rag_mode, num_chunks_slider, chunk_size_slider, name_filter],
             outputs=[chatbot, msg_input, message_history_state, token_display],
         )
         reset_btn.click(
             reset_chat,
             outputs=[chatbot, msg_input, message_history_state, token_display],
         )
+        refresh_names_btn.click(refresh_names, outputs=[name_filter])
 
     with gr.Tab("Embedding Test"):
         gr.Markdown(f"Generate embeddings using **{EMBED_MODEL}**")
@@ -311,6 +342,9 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
         embed_btn = gr.Button("Generate Embedding")
         embed_output = gr.Textbox(label="Result", lines=4)
         embed_btn.click(embed_text, inputs=embed_input, outputs=embed_output)
+
+    # Load document set names on app startup
+    demo.load(refresh_names, outputs=[name_filter])
 
 
 if __name__ == "__main__":
