@@ -5,7 +5,6 @@ import os
 import time
 
 import gradio as gr
-import httpx
 
 from agent import RAGDeps, create_weaviate_client, get_agent, get_multimodal_agent, get_available_names, run_multimodal_with_images
 
@@ -53,46 +52,11 @@ def fetch_document_names() -> list[str]:
     return []
 
 
-def get_embedding(text: str) -> tuple[list[float], float]:
-    """Get embedding for text using Ollama."""
-    start = time.time()
-    response = httpx.post(
-        f"{OLLAMA_BASE_URL}/api/embed",
-        json={"model": EMBED_MODEL, "input": text},
-        timeout=60,
-    )
-    response.raise_for_status()
-    elapsed = time.time() - start
-
-    data = response.json()
-    embeddings = data.get("embeddings", [[]])[0]
-    return embeddings, elapsed
-
-
-def embed_text(text: str) -> str:
-    """Gradio handler for embedding."""
-    if not text.strip():
-        return "Please enter some text to embed."
-
-    try:
-        embedding, elapsed = get_embedding(text)
-        preview = embedding[:5]
-        return (
-            f"Embedding generated in {elapsed:.2f}s\n"
-            f"Dimension: {len(embedding)}\n"
-            f"First 5 values: {preview}"
-        )
-    except Exception as e:
-        return f"Error: {e}"
-
-
 async def rag_chat(
     message: str,
     history: list,
     message_history: list,
     rag_mode: str,
-    num_chunks: int,
-    chunk_content_size: int,
     name_filter: list[str],
 ) -> tuple[list, str, list, str]:
     """Gradio handler for RAG-powered chat with conversation memory.
@@ -102,8 +66,6 @@ async def rag_chat(
         history: Gradio chatbot display history.
         message_history: Pydantic AI message history for conversation memory.
         rag_mode: RAG mode selection ("Auto", "Force", "Disabled").
-        num_chunks: Number of chunks to retrieve from vector DB.
-        chunk_content_size: Max characters to show per chunk.
         name_filter: List of document set names to filter by (empty = all).
 
     Returns:
@@ -148,13 +110,13 @@ async def rag_chat(
                 })
                 return history, "", message_history, ""
 
-        # Create dependencies with user-configured retrieval settings
+        # Create dependencies with default retrieval settings
         deps = RAGDeps(
             weaviate_client=client,
             collection_name=collection_name,
             multimodal=MULTIMODAL_MODE,
-            num_chunks=int(num_chunks),
-            chunk_content_size=int(chunk_content_size),
+            num_chunks=5,
+            chunk_content_size=500,
             name_filter=name_filter if name_filter else None,
         )
 
@@ -216,49 +178,6 @@ async def rag_chat(
         return history, "", message_history, ""
 
 
-def check_ollama_status() -> str:
-    """Check Ollama connection and available models."""
-    try:
-        response = httpx.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
-        response.raise_for_status()
-        models = [m["name"] for m in response.json().get("models", [])]
-        return f"Ollama: Connected\nModels: {', '.join(models)}"
-    except Exception as e:
-        return f"Ollama: Unavailable - {e}"
-
-
-def check_weaviate_status() -> str:
-    """Check Weaviate connection and collections."""
-    try:
-        client = get_weaviate_client()
-        if client is None:
-            return "Weaviate: Could not connect"
-
-        # Check if ready
-        if not client.is_ready():
-            return "Weaviate: Not ready"
-
-        # List collections
-        collections = client.collections.list_all()
-        collection_names = list(collections.keys()) if collections else []
-
-        # Get item count from the active collection
-        active_collection = "MultimodalDocument" if MULTIMODAL_MODE else "Document"
-        item_count = 0
-        if active_collection in collection_names:
-            doc_collection = client.collections.get(active_collection)
-            item_count = doc_collection.aggregate.over_all(total_count=True).total_count
-
-        mode_str = "Multimodal" if MULTIMODAL_MODE else "Text-only"
-        return (
-            f"Weaviate: Connected ({mode_str} mode)\n"
-            f"Collections: {', '.join(collection_names) if collection_names else 'None'}\n"
-            f"Active: {active_collection} ({item_count} items)"
-        )
-    except Exception as e:
-        return f"Weaviate: Error - {e}"
-
-
 def refresh_names():
     """Refresh document set names from Weaviate for the CheckboxGroup."""
     names = fetch_document_names()
@@ -266,109 +185,65 @@ def refresh_names():
 
 
 # Build Gradio interface
-with gr.Blocks(title="Pydantic RAG Demo") as demo:
-    gr.Markdown("# Pydantic RAG Demo")
+with gr.Blocks(title="Pydantic RAG") as demo:
+    gr.Markdown("# Pydantic RAG")
     gr.Markdown("RAG-powered chat using Pydantic AI, Ollama, and Weaviate hybrid search.")
+    if MULTIMODAL_MODE:
+        gr.Markdown(f"**Mode: Multimodal** (CLIP embeddings + {CHAT_MODEL_MULTIMODAL} VLM) - Chat with documents and images")
+    else:
+        gr.Markdown(f"**Mode: Text-only** ({CHAT_MODEL} + nomic-embed-text) - Chat with documents")
 
+    # Session state for Pydantic AI message history (per-user session isolation)
+    message_history_state = gr.State(value=[])
+
+    # RAG mode selector
     with gr.Row():
-        with gr.Column(scale=1):
-            ollama_btn = gr.Button("Check Ollama")
-            ollama_status = gr.Textbox(label="Ollama Status", interactive=False, lines=3)
-            ollama_btn.click(check_ollama_status, outputs=ollama_status)
-
-        with gr.Column(scale=1):
-            weaviate_btn = gr.Button("Check Weaviate")
-            weaviate_status = gr.Textbox(label="Weaviate Status", interactive=False, lines=3)
-            weaviate_btn.click(check_weaviate_status, outputs=weaviate_status)
-
-    with gr.Tab("RAG Chat"):
-        if MULTIMODAL_MODE:
-            gr.Markdown(f"**Mode: Multimodal** (CLIP embeddings + {CHAT_MODEL_MULTIMODAL} VLM) - Chat with documents and images")
-        else:
-            gr.Markdown(f"**Mode: Text-only** ({CHAT_MODEL} + nomic-embed-text) - Chat with documents")
-
-        # Session state for Pydantic AI message history (per-user session isolation)
-        message_history_state = gr.State(value=[])
-
-        # RAG mode selector
-        with gr.Row():
-            rag_mode = gr.Radio(
-                choices=["Auto", "Force", "Disabled"],
-                value="Auto",
-                label="RAG Mode",
-                info="Auto: Agent decides | Force: Always search | Disabled: Plain chat",
-            )
-            token_display = gr.Textbox(
-                label="Token Usage",
-                value="",
-                interactive=False,
-                scale=1,
-            )
-
-        # Retrieval settings
-        with gr.Accordion("Retrieval Settings", open=False):
-            with gr.Row():
-                num_chunks_slider = gr.Slider(
-                    minimum=1,
-                    maximum=20,
-                    value=5,
-                    step=1,
-                    label="Number of Chunks",
-                    info="How many document chunks to retrieve per search",
-                )
-                chunk_size_slider = gr.Slider(
-                    minimum=100,
-                    maximum=4000,
-                    value=500,
-                    step=100,
-                    label="Chunk Display Size (chars)",
-                    info="Max characters to show per chunk (increase for larger context models)",
-                )
-
-            # Document set filter
-            with gr.Row():
-                name_filter = gr.CheckboxGroup(
-                    choices=[],  # Populated dynamically
-                    value=[],    # None selected = search all
-                    label="Document Sets",
-                    info="Select which document sets to search (empty = all)",
-                )
-                refresh_names_btn = gr.Button("Refresh List", size="sm", scale=0)
-
-        chatbot = gr.Chatbot(height=400)
-        msg_input = gr.Textbox(
-            label="Message",
-            placeholder="Ask a question about your documents...",
-            show_label=False,
+        rag_mode = gr.Radio(
+            choices=["Auto", "Force", "Disabled"],
+            value="Force",
+            label="RAG Mode",
+            info="Auto: Agent decides | Force: Always search | Disabled: Plain chat",
         )
-        with gr.Row():
-            reset_btn = gr.Button("Reset Chat", variant="secondary")
-
-        # Reset clears chatbot display, input, message history, and token display
-        def reset_chat():
-            return [], "", [], ""
-
-        msg_input.submit(
-            rag_chat,
-            inputs=[msg_input, chatbot, message_history_state, rag_mode, num_chunks_slider, chunk_size_slider, name_filter],
-            outputs=[chatbot, msg_input, message_history_state, token_display],
+        token_display = gr.Textbox(
+            label="Token Usage",
+            value="",
+            interactive=False,
+            scale=1,
         )
-        reset_btn.click(
-            reset_chat,
-            outputs=[chatbot, msg_input, message_history_state, token_display],
-        )
-        refresh_names_btn.click(refresh_names, outputs=[name_filter])
 
-    with gr.Tab("Embedding Test"):
-        gr.Markdown(f"Generate embeddings using **{EMBED_MODEL}**")
-        embed_input = gr.Textbox(
-            label="Text to embed",
-            placeholder="Enter text to generate embeddings...",
-            lines=3,
+    # Document set filter
+    with gr.Row():
+        name_filter = gr.CheckboxGroup(
+            choices=[],  # Populated dynamically
+            value=[],    # None selected = search all
+            label="Document Sets",
+            info="Select which document sets to search (empty = all)",
         )
-        embed_btn = gr.Button("Generate Embedding")
-        embed_output = gr.Textbox(label="Result", lines=4)
-        embed_btn.click(embed_text, inputs=embed_input, outputs=embed_output)
+        refresh_names_btn = gr.Button("Refresh List", size="sm", scale=0)
+
+    chatbot = gr.Chatbot(height=400)
+    msg_input = gr.Textbox(
+        label="Message",
+        placeholder="Ask a question about your documents...",
+        show_label=False,
+    )
+    with gr.Row():
+        reset_btn = gr.Button("Reset Chat", variant="secondary")
+
+    # Reset clears chatbot display, input, message history, and token display
+    def reset_chat():
+        return [], "", [], ""
+
+    msg_input.submit(
+        rag_chat,
+        inputs=[msg_input, chatbot, message_history_state, rag_mode, name_filter],
+        outputs=[chatbot, msg_input, message_history_state, token_display],
+    )
+    reset_btn.click(
+        reset_chat,
+        outputs=[chatbot, msg_input, message_history_state, token_display],
+    )
+    refresh_names_btn.click(refresh_names, outputs=[name_filter])
 
     # Load document set names on app startup
     demo.load(refresh_names, outputs=[name_filter])

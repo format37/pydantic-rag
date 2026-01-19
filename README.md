@@ -72,6 +72,7 @@ python scripts/ingest.py --name "code" --extensions .py,.md       # Only Python 
 python scripts/ingest.py --name "config" --extensions .yml,Dockerfile  # Extensions and exact filenames
 python scripts/ingest.py --name "images" --multimodal             # Multimodal mode with CLIP (includes images)
 python scripts/ingest.py --name "mm-docs" --multimodal --reset    # Reset and reingest in multimodal mode
+python scripts/ingest.py --documents-dir /home/alex/projects/prototypes/92-claude-agent-sdk/ --extensions .py,.png,.txt,.md,.sh,.yml,Dockerfile --name "claude agent sdk" --multimodal
 ```
 
 > **Note**: The `--name` option is required when ingesting documents. Use `--reset` alone to recreate the schema without ingesting.
