@@ -12,34 +12,43 @@ Usage:
 """
 
 import argparse
+import logging
 import os
 import sys
 from urllib.parse import urlparse
 
 import weaviate
 
+# Standalone logging setup for test script
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("test_weaviate")
+
 
 def test_connection(client: weaviate.WeaviateClient) -> bool:
     """Test basic Weaviate connection."""
-    print("Testing connection...")
+    logger.info("Testing connection...")
     if client.is_ready():
-        print("  - Weaviate is ready")
+        logger.info("  Weaviate is ready")
         return True
     else:
-        print("  - Weaviate is NOT ready")
+        logger.error("  Weaviate is NOT ready")
         return False
 
 
 def test_collection(client: weaviate.WeaviateClient) -> bool:
     """Test that Document collection exists and has data."""
-    print("\nTesting collection...")
+    logger.info("Testing collection...")
 
     if not client.collections.exists("Document"):
-        print("  - Collection 'Document' does not exist")
-        print("  - Run 'python scripts/ingest.py' to create it")
+        logger.warning("  Collection 'Document' does not exist")
+        logger.info("  Run 'python scripts/ingest.py' to create it")
         return False
 
-    print("  - Collection 'Document' exists")
+    logger.info("  Collection 'Document' exists")
 
     collection = client.collections.get("Document")
 
@@ -47,34 +56,34 @@ def test_collection(client: weaviate.WeaviateClient) -> bool:
     response = collection.aggregate.over_all(total_count=True)
     count = response.total_count
 
-    print(f"  - Document count: {count}")
+    logger.info(f"  Document count: {count}")
 
     if count == 0:
-        print("  - Collection is empty. Run ingest.py with documents.")
+        logger.warning("  Collection is empty. Run ingest.py with documents.")
         return False
 
     # Get sample
     sample = collection.query.fetch_objects(limit=1)
     if sample.objects:
         obj = sample.objects[0]
-        print(f"  - Sample source: {obj.properties.get('source', 'N/A')}")
+        logger.info(f"  Sample source: {obj.properties.get('source', 'N/A')}")
 
     return True
 
 
 def test_hybrid_search(client: weaviate.WeaviateClient, query: str) -> bool:
     """Test hybrid search functionality."""
-    print(f"\nTesting hybrid search with query: '{query}'")
+    logger.info(f"Testing hybrid search with query: '{query}'")
 
     if not client.collections.exists("Document"):
-        print("  - Collection 'Document' does not exist")
+        logger.warning("  Collection 'Document' does not exist")
         return False
 
     collection = client.collections.get("Document")
 
     # Test different alpha values
     for alpha, name in [(0.0, "keyword-only"), (0.5, "balanced"), (1.0, "vector-only")]:
-        print(f"\n  Alpha={alpha} ({name}):")
+        logger.info(f"  Alpha={alpha} ({name}):")
 
         try:
             response = collection.query.hybrid(
@@ -84,17 +93,17 @@ def test_hybrid_search(client: weaviate.WeaviateClient, query: str) -> bool:
             )
 
             if not response.objects:
-                print("    No results found")
+                logger.info("    No results found")
             else:
                 for i, obj in enumerate(response.objects, 1):
                     source = obj.properties.get("source", "unknown")
                     chunk_idx = obj.properties.get("chunk_index", "?")
                     content = obj.properties.get("content", "")[:100]
-                    print(f"    {i}. [{source}:chunk {chunk_idx}]")
-                    print(f"       {content}...")
+                    logger.info(f"    {i}. [{source}:chunk {chunk_idx}]")
+                    logger.info(f"       {content}...")
 
         except Exception as e:
-            print(f"    Error: {e}")
+            logger.error(f"    Error: {e}")
             return False
 
     return True
@@ -119,7 +128,7 @@ def main():
     host = parsed.hostname or "localhost"
     port = parsed.port or 8080
 
-    print(f"Connecting to Weaviate at {args.weaviate_url}...")
+    logger.info(f"Connecting to Weaviate at {args.weaviate_url}...")
 
     try:
         client = weaviate.connect_to_local(host=host, port=port)
@@ -132,26 +141,26 @@ def main():
         results.append(("Hybrid Search", test_hybrid_search(client, args.query)))
 
         # Summary
-        print("\n" + "=" * 50)
-        print("Test Summary:")
+        logger.info("=" * 50)
+        logger.info("Test Summary:")
         all_passed = True
         for name, passed in results:
             status = "PASS" if passed else "FAIL"
-            print(f"  {name}: {status}")
+            logger.info(f"  {name}: {status}")
             if not passed:
                 all_passed = False
 
         if all_passed:
-            print("\nAll tests passed!")
+            logger.info("All tests passed!")
             sys.exit(0)
         else:
-            print("\nSome tests failed.")
+            logger.warning("Some tests failed.")
             sys.exit(1)
 
     except Exception as e:
-        print(f"Error: {e}")
-        print("\nMake sure Weaviate is running:")
-        print("  docker compose up -d weaviate")
+        logger.error(f"Error: {e}")
+        logger.error("Make sure Weaviate is running:")
+        logger.error("  docker compose up -d weaviate")
         sys.exit(1)
     finally:
         client.close()

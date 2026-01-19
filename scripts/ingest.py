@@ -21,6 +21,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
+# Setup logging from app module
+sys.path.insert(0, str(Path(__file__).parent.parent / "app"))
+from logging_config import setup_logging, get_logger
+setup_logging()
+logger = get_logger("scripts.ingest")
+
 import weaviate
 import weaviate.classes as wvc
 from weaviate.classes.config import Configure, Property, DataType
@@ -144,7 +150,7 @@ def read_pdf_file(filepath: Path) -> PDFContent:
     try:
         from pypdf import PdfReader
     except ImportError:
-        print("Error: pypdf not installed. Run: pip install pypdf")
+        logger.error("pypdf not installed. Run: pip install pypdf")
         sys.exit(1)
 
     reader = PdfReader(filepath)
@@ -235,10 +241,10 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
 
     # Delete existing collection if it exists
     if client.collections.exists(collection_name):
-        print(f"Collection '{collection_name}' already exists. Deleting...")
+        logger.warning(f"Collection '{collection_name}' already exists. Deleting...")
         client.collections.delete(collection_name)
 
-    print(f"Creating collection '{collection_name}'...")
+    logger.info(f"Creating collection '{collection_name}'...")
     client.collections.create(
         name=collection_name,
         vectorizer_config=Configure.Vectorizer.text2vec_ollama(
@@ -265,7 +271,7 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
             Property(name="page_number", data_type=DataType.INT),  # For PDFs, nullable
         ]
     )
-    print(f"Collection '{collection_name}' created successfully.")
+    logger.info(f"Collection '{collection_name}' created successfully.")
 
 
 def create_multimodal_collection(client: weaviate.WeaviateClient) -> None:
@@ -274,10 +280,10 @@ def create_multimodal_collection(client: weaviate.WeaviateClient) -> None:
 
     # Delete existing collection if it exists
     if client.collections.exists(collection_name):
-        print(f"Collection '{collection_name}' already exists. Deleting...")
+        logger.warning(f"Collection '{collection_name}' already exists. Deleting...")
         client.collections.delete(collection_name)
 
-    print(f"Creating collection '{collection_name}'...")
+    logger.info(f"Creating collection '{collection_name}'...")
     client.collections.create(
         name=collection_name,
         vectorizer_config=Configure.Vectorizer.multi2vec_clip(
@@ -303,7 +309,7 @@ def create_multimodal_collection(client: weaviate.WeaviateClient) -> None:
             Property(name="page_number", data_type=DataType.INT),
         ]
     )
-    print(f"Collection '{collection_name}' created successfully.")
+    logger.info(f"Collection '{collection_name}' created successfully.")
 
 
 def ingest_documents(
@@ -348,19 +354,19 @@ def ingest_documents(
     files = [f for f in documents_dir.rglob("*") if f.is_file() and file_matches(f)]
 
     if not files:
-        print(f"No documents found in {documents_dir}")
+        logger.warning(f"No documents found in {documents_dir}")
         if use_custom_filter:
             parts = []
             if extensions:
                 parts.append(f"extensions: {', '.join(sorted(extensions))}")
             if filenames:
                 parts.append(f"filenames: {', '.join(sorted(filenames))}")
-            print(f"Looking for {'; '.join(parts)}")
+            logger.info(f"Looking for {'; '.join(parts)}")
         else:
-            print(f"Looking for extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+            logger.info(f"Looking for extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         return 0
 
-    print(f"Found {len(files)} document(s) to process")
+    logger.info(f"Found {len(files)} document(s) to process")
 
     for filepath in files:
         # Calculate relative path from documents_dir
@@ -369,7 +375,7 @@ def ingest_documents(
         filename = filepath.name
         source = str(rel_path)  # Full relative path
 
-        print(f"\nProcessing: {source}")
+        logger.info(f"Processing: {source}")
 
         try:
             file_type = get_file_type(filepath)
@@ -385,7 +391,7 @@ def ingest_documents(
 
             # Chunk document with position tracking
             chunks = list(chunk_text(text))
-            print(f"  - {len(chunks)} chunks ({estimate_tokens(text)} estimated tokens)")
+            logger.info(f"  {len(chunks)} chunks ({estimate_tokens(text)} estimated tokens)")
 
             # Insert chunks in small batches to avoid Ollama embedding timeouts
             inserted = 0
@@ -419,23 +425,23 @@ def ingest_documents(
                     result = collection.data.insert_many(objects)
                     if result.has_errors:
                         for err in result.errors.values():
-                            print(f"    Batch error: {err.message}")
+                            logger.error(f"  Batch error: {err.message}")
                         failed += len([e for e in result.errors.values()])
                         inserted += len(batch_chunks) - len(result.errors)
                     else:
                         inserted += len(batch_chunks)
 
                     # Progress indicator
-                    print(f"  - Progress: {min(i + batch_size, len(chunks))}/{len(chunks)} chunks", end="\r")
+                    logger.debug(f"  Progress: {min(i + batch_size, len(chunks))}/{len(chunks)} chunks")
                 except Exception as e:
-                    print(f"    Batch {i//batch_size + 1} failed: {e}")
+                    logger.error(f"  Batch {i//batch_size + 1} failed: {e}")
                     failed += len(batch_chunks)
 
             total_chunks += inserted
-            print(f"  - Inserted {inserted} chunks" + (f" ({failed} failed)" if failed else ""))
+            logger.info(f"  Inserted {inserted} chunks" + (f" ({failed} failed)" if failed else ""))
 
         except Exception as e:
-            print(f"  - Error processing {source}: {e}")
+            logger.error(f"  Error processing {source}: {e}")
 
     return total_chunks
 
@@ -487,19 +493,19 @@ def ingest_multimodal_documents(
     files = [f for f in documents_dir.rglob("*") if f.is_file() and file_matches(f)]
 
     if not files:
-        print(f"No documents found in {documents_dir}")
+        logger.warning(f"No documents found in {documents_dir}")
         if use_custom_filter:
             parts = []
             if extensions:
                 parts.append(f"extensions: {', '.join(sorted(extensions))}")
             if filenames:
                 parts.append(f"filenames: {', '.join(sorted(filenames))}")
-            print(f"Looking for {'; '.join(parts)}")
+            logger.info(f"Looking for {'; '.join(parts)}")
         else:
-            print(f"Looking for extensions: {', '.join(sorted(MULTIMODAL_EXTENSIONS))}")
+            logger.info(f"Looking for extensions: {', '.join(sorted(MULTIMODAL_EXTENSIONS))}")
         return 0
 
-    print(f"Found {len(files)} file(s) to process")
+    logger.info(f"Found {len(files)} file(s) to process")
 
     for filepath in files:
         # Calculate relative path from documents_dir
@@ -508,14 +514,14 @@ def ingest_multimodal_documents(
         filename = filepath.name
         source = str(rel_path)  # Full relative path
 
-        print(f"\nProcessing: {source}")
+        logger.info(f"Processing: {source}")
 
         try:
             file_type = get_file_type(filepath)
 
             # Handle images differently from text
             if file_type == "image":
-                print(f"  - Storing image (no caption generation - VLM will analyze at query time)...")
+                logger.info("  Storing image (no caption generation - VLM will analyze at query time)...")
 
                 # Read image as base64
                 with open(filepath, "rb") as f:
@@ -542,9 +548,9 @@ def ingest_multimodal_documents(
                 try:
                     collection.data.insert(obj)
                     total_items += 1
-                    print(f"  - Inserted image ({len(image_b64)} bytes base64)")
+                    logger.info(f"  Inserted image ({len(image_b64)} bytes base64)")
                 except Exception as e:
-                    print(f"  - Error inserting image: {e}")
+                    logger.error(f"  Error inserting image: {e}")
 
             else:
                 # Handle text documents (same logic as ingest_documents)
@@ -559,7 +565,7 @@ def ingest_multimodal_documents(
 
                 # Chunk document with position tracking
                 chunks = list(chunk_text(text))
-                print(f"  - {len(chunks)} chunks ({estimate_tokens(text)} estimated tokens)")
+                logger.info(f"  {len(chunks)} chunks ({estimate_tokens(text)} estimated tokens)")
 
                 # Insert chunks in small batches
                 inserted = 0
@@ -596,23 +602,23 @@ def ingest_multimodal_documents(
                         result = collection.data.insert_many(objects)
                         if result.has_errors:
                             for err in result.errors.values():
-                                print(f"    Batch error: {err.message}")
+                                logger.error(f"  Batch error: {err.message}")
                             failed += len([e for e in result.errors.values()])
                             inserted += len(batch_chunks) - len(result.errors)
                         else:
                             inserted += len(batch_chunks)
 
                         # Progress indicator
-                        print(f"  - Progress: {min(i + batch_size, len(chunks))}/{len(chunks)} chunks", end="\r")
+                        logger.debug(f"  Progress: {min(i + batch_size, len(chunks))}/{len(chunks)} chunks")
                     except Exception as e:
-                        print(f"    Batch {i//batch_size + 1} failed: {e}")
+                        logger.error(f"  Batch {i//batch_size + 1} failed: {e}")
                         failed += len(batch_chunks)
 
                 total_items += inserted
-                print(f"  - Inserted {inserted} chunks" + (f" ({failed} failed)" if failed else ""))
+                logger.info(f"  Inserted {inserted} chunks" + (f" ({failed} failed)" if failed else ""))
 
         except Exception as e:
-            print(f"  - Error processing {source}: {e}")
+            logger.error(f"  Error processing {source}: {e}")
 
     return total_items
 
@@ -664,12 +670,12 @@ def main():
     documents_dir = project_root / args.documents_dir
 
     if not documents_dir.exists():
-        print(f"Error: Documents directory not found: {documents_dir}")
-        print("Please create it and add documents to ingest:")
-        print(f"  mkdir -p {documents_dir}")
+        logger.error(f"Documents directory not found: {documents_dir}")
+        logger.error("Please create it and add documents to ingest:")
+        logger.error(f"  mkdir -p {documents_dir}")
         sys.exit(1)
 
-    print(f"Connecting to Weaviate at {args.weaviate_url}...")
+    logger.info(f"Connecting to Weaviate at {args.weaviate_url}...")
 
     # Parse URL to get host and port
     from urllib.parse import urlparse
@@ -682,18 +688,18 @@ def main():
 
         # Check connection
         if not client.is_ready():
-            print("Error: Weaviate is not ready")
+            logger.error("Weaviate is not ready")
             sys.exit(1)
 
-        print("Connected to Weaviate")
+        logger.info("Connected to Weaviate")
 
         # Determine which collection to use based on mode
         if args.multimodal:
             collection_name = "MultimodalDocument"
-            print("Mode: Multimodal (CLIP + LLaVA)")
+            logger.info("Mode: Multimodal (CLIP + LLaVA)")
         else:
             collection_name = "Document"
-            print("Mode: Text-only (nomic-embed-text + llama3.2)")
+            logger.info("Mode: Text-only (nomic-embed-text + llama3.2)")
 
         # Create or reset collection
         if args.reset or not client.collections.exists(collection_name):
@@ -703,14 +709,14 @@ def main():
                 create_collection(client, args.ollama_url)
             # If reset-only (no --name), exit after resetting
             if args.reset and not args.name:
-                print(f"\nCollection '{collection_name}' reset complete. Use --name to ingest documents.")
+                logger.info(f"Collection '{collection_name}' reset complete. Use --name to ingest documents.")
                 return
         else:
-            print(f"Using existing '{collection_name}' collection (use --reset to recreate)")
+            logger.info(f"Using existing '{collection_name}' collection (use --reset to recreate)")
 
         # Require --name for ingestion
         if not args.name:
-            print("Error: --name is required when ingesting documents")
+            logger.error("--name is required when ingesting documents")
             sys.exit(1)
 
         # Parse extensions/filenames if provided
@@ -720,7 +726,7 @@ def main():
             raw_filters = {f.strip() for f in args.extensions.split(",") if f.strip()}
 
             if not raw_filters:
-                print("Error: No extensions specified")
+                logger.error("No extensions specified")
                 sys.exit(1)
 
             # Separate extensions (start with .) from exact filenames
@@ -742,10 +748,10 @@ def main():
                 filter_parts.append(f"extensions: {', '.join(sorted(extensions))}")
             if filenames:
                 filter_parts.append(f"filenames: {', '.join(sorted(filenames))}")
-            print(f"Filtering for {'; '.join(filter_parts)}")
+            logger.info(f"Filtering for {'; '.join(filter_parts)}")
 
         # Ingest documents
-        print(f"Ingesting with name: '{args.name}'")
+        logger.info(f"Ingesting with name: '{args.name}'")
         if args.multimodal:
             total = ingest_multimodal_documents(
                 client, documents_dir,
@@ -753,13 +759,13 @@ def main():
                 extensions=extensions,
                 filenames=filenames
             )
-            print(f"\nIngestion complete: {total} items stored in Weaviate (MultimodalDocument)")
+            logger.info(f"Ingestion complete: {total} items stored in Weaviate (MultimodalDocument)")
         else:
             total = ingest_documents(client, documents_dir, name=args.name, extensions=extensions, filenames=filenames)
-            print(f"\nIngestion complete: {total} chunks stored in Weaviate (Document)")
+            logger.info(f"Ingestion complete: {total} chunks stored in Weaviate (Document)")
 
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"Error: {e}")
         sys.exit(1)
     finally:
         client.close()

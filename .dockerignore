@@ -4,3 +4,4 @@ scripts/
 .git/
 .gitignore
 *.md
+app/__pycache__/

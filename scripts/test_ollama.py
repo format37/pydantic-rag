@@ -1,31 +1,41 @@
 #!/usr/bin/env python3
 """Test script to verify Ollama is running and models are available."""
 
+import logging
 import time
+
 import httpx
+
+# Standalone logging setup for test script
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("test_ollama")
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
 
 def wait_for_ollama(timeout: int = 300, poll_interval: int = 5) -> bool:
     """Wait for Ollama to be ready by polling /api/tags."""
-    print(f"Waiting for Ollama to be ready (timeout: {timeout}s)...")
+    logger.info(f"Waiting for Ollama to be ready (timeout: {timeout}s)...")
     start = time.time()
 
     while time.time() - start < timeout:
         try:
             response = httpx.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=5)
             if response.status_code == 200:
-                print("Ollama is ready!")
+                logger.info("Ollama is ready!")
                 return True
         except httpx.ConnectError:
             pass
 
         elapsed = int(time.time() - start)
-        print(f"  Waiting... ({elapsed}s elapsed)")
+        logger.debug(f"  Waiting... ({elapsed}s elapsed)")
         time.sleep(poll_interval)
 
-    print("Timeout waiting for Ollama")
+    logger.error("Timeout waiting for Ollama")
     return False
 
 
@@ -41,7 +51,7 @@ def list_models() -> list[str]:
 
 def test_embedding(model: str = "nomic-embed-text") -> bool:
     """Test embedding generation."""
-    print(f"\nTesting embedding with {model}...")
+    logger.info(f"Testing embedding with {model}...")
 
     response = httpx.post(
         f"{OLLAMA_BASE_URL}/api/embed",
@@ -54,17 +64,17 @@ def test_embedding(model: str = "nomic-embed-text") -> bool:
     embeddings = data.get("embeddings", [])
 
     if embeddings and len(embeddings[0]) > 0:
-        print(f"  Embedding dimension: {len(embeddings[0])}")
-        print(f"  First 5 values: {embeddings[0][:5]}")
+        logger.info(f"  Embedding dimension: {len(embeddings[0])}")
+        logger.info(f"  First 5 values: {embeddings[0][:5]}")
         return True
 
-    print("  Failed: No embeddings returned")
+    logger.error("  Failed: No embeddings returned")
     return False
 
 
 def test_generation(model: str = "llama3.2") -> bool:
     """Test text generation."""
-    print(f"\nTesting generation with {model}...")
+    logger.info(f"Testing generation with {model}...")
 
     response = httpx.post(
         f"{OLLAMA_BASE_URL}/api/generate",
@@ -81,33 +91,33 @@ def test_generation(model: str = "llama3.2") -> bool:
     generated = data.get("response", "")
 
     if generated:
-        print(f"  Response: {generated.strip()[:100]}")
+        logger.info(f"  Response: {generated.strip()[:100]}")
         return True
 
-    print("  Failed: No response generated")
+    logger.error("  Failed: No response generated")
     return False
 
 
 def main():
-    print("=" * 50)
-    print("Ollama Test Script")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("Ollama Test Script")
+    logger.info("=" * 50)
 
     # Wait for Ollama to be ready
     if not wait_for_ollama():
-        print("\nFailed: Ollama is not available")
+        logger.error("Failed: Ollama is not available")
         return 1
 
     # List models
-    print("\nAvailable models:")
+    logger.info("Available models:")
     models = list_models()
     if not models:
-        print("  No models found. Models may still be downloading.")
-        print("  Check logs with: docker compose logs -f ollama")
+        logger.warning("  No models found. Models may still be downloading.")
+        logger.info("  Check logs with: docker compose logs -f ollama")
         return 1
 
     for model in models:
-        print(f"  - {model}")
+        logger.info(f"  - {model}")
 
     # Test embedding
     embedding_ok = test_embedding()
@@ -116,11 +126,11 @@ def main():
     generation_ok = test_generation()
 
     # Summary
-    print("\n" + "=" * 50)
-    print("Results:")
-    print(f"  Embedding: {'PASS' if embedding_ok else 'FAIL'}")
-    print(f"  Generation: {'PASS' if generation_ok else 'FAIL'}")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("Results:")
+    logger.info(f"  Embedding: {'PASS' if embedding_ok else 'FAIL'}")
+    logger.info(f"  Generation: {'PASS' if generation_ok else 'FAIL'}")
+    logger.info("=" * 50)
 
     return 0 if (embedding_ok and generation_ok) else 1
 

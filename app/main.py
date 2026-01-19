@@ -7,6 +7,10 @@ import time
 import gradio as gr
 
 from agent import RAGDeps, create_weaviate_client, get_agent, get_multimodal_agent, get_available_names, run_multimodal_with_images
+from logging_config import setup_logging, get_logger
+
+setup_logging()
+logger = get_logger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://weaviate:8080")
@@ -250,19 +254,19 @@ with gr.Blocks(title="Pydantic RAG") as demo:
 
 
 if __name__ == "__main__":
-    print(f"Starting Gradio app...")
-    print(f"Ollama URL: {OLLAMA_BASE_URL}")
-    print(f"Weaviate URL: {WEAVIATE_URL}")
-    print(f"Multimodal mode: {MULTIMODAL_MODE}")
+    logger.info("Starting Gradio app...")
+    logger.info(f"Ollama URL: {OLLAMA_BASE_URL}")
+    logger.info(f"Weaviate URL: {WEAVIATE_URL}")
+    logger.info(f"Multimodal mode: {MULTIMODAL_MODE}")
     if MULTIMODAL_MODE:
-        print(f"Chat model: {CHAT_MODEL_MULTIMODAL} (vision + tools)")
-        print(f"Embed model: CLIP ViT-B-32 (multi2vec-clip)")
-        print(f"Collection: MultimodalDocument")
-        print(f"Image analysis: VLM at query time (no pre-generated captions)")
+        logger.info(f"Chat model: {CHAT_MODEL_MULTIMODAL} (vision + tools)")
+        logger.info("Embed model: CLIP ViT-B-32 (multi2vec-clip)")
+        logger.info("Collection: MultimodalDocument")
+        logger.info("Image analysis: VLM at query time (no pre-generated captions)")
     else:
-        print(f"Chat model: {CHAT_MODEL}")
-        print(f"Embed model: {EMBED_MODEL}")
-        print(f"Collection: Document")
+        logger.info(f"Chat model: {CHAT_MODEL}")
+        logger.info(f"Embed model: {EMBED_MODEL}")
+        logger.info("Collection: Document")
 
     try:
         demo.launch(server_name="0.0.0.0", server_port=7860, share=False)

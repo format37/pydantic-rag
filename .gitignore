@@ -3,3 +3,4 @@ tech-specs.md
 data/
 prep.md
 CLAUDE.md
+app/__pycache__/logging_config.cpython-311.pyc

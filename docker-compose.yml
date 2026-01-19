@@ -66,6 +66,7 @@ services:
       - CHAT_MODEL=llama3.2
       - CHAT_MODEL_MULTIMODAL=mistral-small3.1
       - MULTIMODAL_MODE=true
+      - LOG_LEVEL=INFO
     depends_on:
       - ollama
       - weaviate
