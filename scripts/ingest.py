@@ -8,7 +8,10 @@ Weaviate's text2vec-ollama module handles embedding automatically.
 
 Usage:
     python scripts/ingest.py [--weaviate-url URL] [--ollama-url URL]
-    python scripts/ingest.py --reset  # Delete collection and re-ingest
+    python scripts/ingest.py --reset                       # Delete collection and re-ingest
+    python scripts/ingest.py --documents-dir ./my-docs     # Custom source folder
+    python scripts/ingest.py --extensions .py,.md          # Only specific file types
+    python scripts/ingest.py --extensions .yml,Dockerfile  # Extensions and exact filenames
 """
 
 import argparse
@@ -190,7 +193,10 @@ def read_code_file(filepath: Path) -> str:
 
 
 def read_document(filepath: Path) -> str:
-    """Read a document based on its extension."""
+    """Read a document based on its extension.
+
+    Unknown extensions are treated as plain text files.
+    """
     ext = filepath.suffix.lower()
 
     if ext in TEXT_EXTENSIONS:
@@ -200,11 +206,15 @@ def read_document(filepath: Path) -> str:
     elif ext in PDF_EXTENSIONS:
         return read_pdf_file(filepath)
     else:
-        raise ValueError(f"Unsupported file type: {ext}")
+        # Treat unknown extensions as plain text
+        return read_text_file(filepath)
 
 
 def get_file_type(filepath: Path) -> str:
-    """Get file type category from extension."""
+    """Get file type category from extension.
+
+    Unknown extensions are categorized as 'text'.
+    """
     ext = filepath.suffix.lower()
     if ext in TEXT_EXTENSIONS:
         return "text"
@@ -212,7 +222,7 @@ def get_file_type(filepath: Path) -> str:
         return "code"
     elif ext in PDF_EXTENSIONS:
         return "pdf"
-    return "unknown"
+    return "text"  # Treat unknown as text
 
 
 def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
@@ -256,20 +266,53 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
 def ingest_documents(
     client: weaviate.WeaviateClient,
     documents_dir: Path,
-    batch_size: int = 10
+    batch_size: int = 10,
+    extensions: set[str] | None = None,
+    filenames: set[str] | None = None
 ) -> int:
-    """Ingest documents from directory (recursively) into Weaviate."""
+    """Ingest documents from directory (recursively) into Weaviate.
+
+    Args:
+        client: Weaviate client connection
+        documents_dir: Directory to scan for documents
+        batch_size: Number of chunks to insert per batch
+        extensions: Set of file extensions to include (e.g., {'.py', '.md'}).
+                   If None and filenames is None, uses all SUPPORTED_EXTENSIONS.
+        filenames: Set of exact filenames to include (e.g., {'Dockerfile', 'Makefile'}).
+    """
     collection = client.collections.get("Document")
 
     total_chunks = 0
 
-    # Find all supported files recursively
-    files = [f for f in documents_dir.rglob("*")
-             if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
+    # Determine filtering mode
+    use_custom_filter = extensions or filenames
+
+    def file_matches(f: Path) -> bool:
+        """Check if file matches the filter criteria."""
+        if not use_custom_filter:
+            # Default: use SUPPORTED_EXTENSIONS
+            return f.suffix.lower() in SUPPORTED_EXTENSIONS
+        # Custom filter: match extension OR exact filename
+        if extensions and f.suffix.lower() in extensions:
+            return True
+        if filenames and f.name in filenames:
+            return True
+        return False
+
+    # Find all matching files recursively
+    files = [f for f in documents_dir.rglob("*") if f.is_file() and file_matches(f)]
 
     if not files:
-        print(f"No supported documents found in {documents_dir}")
-        print(f"Supported extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+        print(f"No documents found in {documents_dir}")
+        if use_custom_filter:
+            parts = []
+            if extensions:
+                parts.append(f"extensions: {', '.join(sorted(extensions))}")
+            if filenames:
+                parts.append(f"filenames: {', '.join(sorted(filenames))}")
+            print(f"Looking for {'; '.join(parts)}")
+        else:
+            print(f"Looking for extensions: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
         return 0
 
     print(f"Found {len(files)} document(s) to process")
@@ -373,6 +416,12 @@ def main():
         action="store_true",
         help="Reset (delete and recreate) the collection before ingesting"
     )
+    parser.add_argument(
+        "--extensions",
+        type=str,
+        default=None,
+        help="Comma-separated extensions or filenames (e.g., '.py,.yml,Dockerfile'). Default: all supported"
+    )
     args = parser.parse_args()
 
     # Resolve documents directory relative to project root
@@ -410,8 +459,39 @@ def main():
         else:
             print("Using existing 'Document' collection (use --reset to recreate)")
 
+        # Parse extensions/filenames if provided
+        extensions = None
+        filenames = None
+        if args.extensions:
+            raw_filters = {f.strip() for f in args.extensions.split(",") if f.strip()}
+
+            if not raw_filters:
+                print("Error: No extensions specified")
+                sys.exit(1)
+
+            # Separate extensions (start with .) from exact filenames
+            extensions = set()
+            filenames = set()
+            for f in raw_filters:
+                if f.startswith("."):
+                    extensions.add(f.lower())
+                elif "." in f:
+                    # Has extension like "file.txt" - treat as extension
+                    extensions.add(f".{f.rsplit('.', 1)[1].lower()}")
+                else:
+                    # No dot - exact filename like "Dockerfile", "Makefile"
+                    filenames.add(f)
+
+            # Report what we're filtering for
+            filter_parts = []
+            if extensions:
+                filter_parts.append(f"extensions: {', '.join(sorted(extensions))}")
+            if filenames:
+                filter_parts.append(f"filenames: {', '.join(sorted(filenames))}")
+            print(f"Filtering for {'; '.join(filter_parts)}")
+
         # Ingest documents
-        total = ingest_documents(client, documents_dir)
+        total = ingest_documents(client, documents_dir, extensions=extensions, filenames=filenames)
 
         print(f"\nIngestion complete: {total} chunks stored in Weaviate")
 

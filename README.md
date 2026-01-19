@@ -63,7 +63,10 @@ python scripts/ingest.py
 **Ingestion options**:
 ```bash
 python scripts/ingest.py --help
-python scripts/ingest.py --reset  # Delete and recreate collection
+python scripts/ingest.py --reset                       # Delete and recreate collection
+python scripts/ingest.py --documents-dir ./my-docs     # Custom source folder
+python scripts/ingest.py --extensions .py,.md          # Only Python and Markdown files
+python scripts/ingest.py --extensions .yml,Dockerfile  # Extensions and exact filenames
 ```
 
 Documents are chunked (800 tokens, 200 overlap) and embedded automatically by Weaviate's text2vec-ollama module.
