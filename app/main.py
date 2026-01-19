@@ -78,6 +78,8 @@ async def rag_chat(
     history: list,
     message_history: list,
     rag_mode: str,
+    num_chunks: int,
+    chunk_content_size: int,
 ) -> tuple[list, str, list, str]:
     """Gradio handler for RAG-powered chat with conversation memory.
 
@@ -86,6 +88,8 @@ async def rag_chat(
         history: Gradio chatbot display history.
         message_history: Pydantic AI message history for conversation memory.
         rag_mode: RAG mode selection ("Auto", "Force", "Disabled").
+        num_chunks: Number of chunks to retrieve from vector DB.
+        chunk_content_size: Max characters to show per chunk.
 
     Returns:
         Tuple of (updated history, cleared input, updated message_history, token info).
@@ -126,8 +130,13 @@ async def rag_chat(
                 })
                 return history, "", message_history, ""
 
-        # Create dependencies and get agent for the selected mode
-        deps = RAGDeps(weaviate_client=client, collection_name="Document")
+        # Create dependencies with user-configured retrieval settings
+        deps = RAGDeps(
+            weaviate_client=client,
+            collection_name="Document",
+            num_chunks=int(num_chunks),
+            chunk_content_size=int(chunk_content_size),
+        )
         agent = get_agent(rag_mode_lower)
 
         start = time.time()
@@ -249,6 +258,26 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
                 scale=1,
             )
 
+        # Retrieval settings
+        with gr.Accordion("Retrieval Settings", open=False):
+            with gr.Row():
+                num_chunks_slider = gr.Slider(
+                    minimum=1,
+                    maximum=20,
+                    value=5,
+                    step=1,
+                    label="Number of Chunks",
+                    info="How many document chunks to retrieve per search",
+                )
+                chunk_size_slider = gr.Slider(
+                    minimum=100,
+                    maximum=4000,
+                    value=500,
+                    step=100,
+                    label="Chunk Display Size (chars)",
+                    info="Max characters to show per chunk (increase for larger context models)",
+                )
+
         chatbot = gr.Chatbot(height=400)
         msg_input = gr.Textbox(
             label="Message",
@@ -264,7 +293,7 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
 
         msg_input.submit(
             rag_chat,
-            inputs=[msg_input, chatbot, message_history_state, rag_mode],
+            inputs=[msg_input, chatbot, message_history_state, rag_mode, num_chunks_slider, chunk_size_slider],
             outputs=[chatbot, msg_input, message_history_state, token_display],
         )
         reset_btn.click(

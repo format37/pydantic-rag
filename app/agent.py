@@ -49,6 +49,9 @@ class RAGDeps:
 
     weaviate_client: weaviate.WeaviateClient
     collection_name: str = "Document"
+    # Configurable retrieval parameters
+    num_chunks: int = 5  # Number of chunks to retrieve
+    chunk_content_size: int = 500  # Max chars to show per chunk
 
 
 def create_weaviate_client() -> weaviate.WeaviateClient:
@@ -103,7 +106,7 @@ def create_agent(rag_mode: str = "auto") -> Agent[RAGDeps, str]:
                 query: The search query to find relevant documents.
 
             Returns:
-                Formatted search results with content and source citations.
+                Formatted search results with content, source citations, and position info.
             """
             try:
                 collection = ctx.deps.weaviate_client.collections.get(ctx.deps.collection_name)
@@ -111,7 +114,7 @@ def create_agent(rag_mode: str = "auto") -> Agent[RAGDeps, str]:
                 response = collection.query.hybrid(
                     query=query,
                     alpha=0.5,  # Balance between keyword (0) and vector (1) search
-                    limit=5,
+                    limit=ctx.deps.num_chunks,
                     return_metadata=["score"],
                 )
 
@@ -125,12 +128,29 @@ def create_agent(rag_mode: str = "auto") -> Agent[RAGDeps, str]:
                     source = props.get("source", "Unknown source")
                     chunk_index = props.get("chunk_index", "?")
 
-                    # Truncate content if too long
-                    if len(content) > 500:
-                        content = content[:500] + "..."
+                    # Position metadata
+                    start_line = props.get("start_line")
+                    end_line = props.get("end_line")
+                    page_number = props.get("page_number")
+
+                    # Build location string
+                    location_parts = []
+                    if page_number:
+                        location_parts.append(f"page {page_number}")
+                    if start_line and end_line:
+                        if start_line == end_line:
+                            location_parts.append(f"line {start_line}")
+                        else:
+                            location_parts.append(f"lines {start_line}-{end_line}")
+                    location_str = ", ".join(location_parts) if location_parts else f"chunk {chunk_index}"
+
+                    # Truncate content based on configurable size
+                    max_size = ctx.deps.chunk_content_size
+                    if len(content) > max_size:
+                        content = content[:max_size] + "..."
 
                     results.append(
-                        f"[Result {i}] Source: {source} (chunk {chunk_index})\n"
+                        f"[Result {i}] Source: {source} ({location_str})\n"
                         f"Content: {content}\n"
                     )
 

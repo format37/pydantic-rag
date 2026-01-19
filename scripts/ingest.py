@@ -2,16 +2,19 @@
 """
 Document ingestion script for Weaviate vector database.
 
-Reads documents from data/documents/, chunks them, and stores in Weaviate.
+Reads documents from data/documents/ (including subfolders), chunks them,
+and stores in Weaviate with position metadata for source linking.
 Weaviate's text2vec-ollama module handles embedding automatically.
 
 Usage:
     python scripts/ingest.py [--weaviate-url URL] [--ollama-url URL]
+    python scripts/ingest.py --reset  # Delete collection and re-ingest
 """
 
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
@@ -31,26 +34,54 @@ CHUNK_SIZE = 800  # tokens (approximate as chars / 4)
 CHUNK_OVERLAP = 200  # tokens
 
 
+@dataclass
+class ChunkInfo:
+    """Metadata for a text chunk including position information."""
+    content: str
+    chunk_index: int
+    start_char: int
+    end_char: int
+    start_line: int
+    end_line: int
+    page_number: int | None = None  # Only for PDFs
+
+
 def estimate_tokens(text: str) -> int:
     """Rough token estimate (1 token ~ 4 chars for English)."""
     return len(text) // 4
 
 
-def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> Iterator[str]:
+def count_lines_before(text: str, position: int) -> int:
+    """Count number of newlines before a position in text."""
+    return text[:position].count('\n') + 1
+
+
+def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> Iterator[ChunkInfo]:
     """
-    Split text into overlapping chunks.
+    Split text into overlapping chunks with position tracking.
 
     Uses character-based splitting with token estimation.
     Tries to split on paragraph boundaries when possible.
+
+    Yields:
+        ChunkInfo objects with content and position metadata.
     """
     # Convert token counts to character counts
     char_chunk_size = chunk_size * 4
     char_overlap = overlap * 4
 
     if len(text) <= char_chunk_size:
-        yield text
+        yield ChunkInfo(
+            content=text,
+            chunk_index=0,
+            start_char=0,
+            end_char=len(text),
+            start_line=1,
+            end_line=count_lines_before(text, len(text)),
+        )
         return
 
+    chunk_index = 0
     start = 0
     while start < len(text):
         end = start + char_chunk_size
@@ -71,7 +102,19 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
 
         chunk = text[start:end].strip()
         if chunk:
-            yield chunk
+            # Find actual positions of stripped content
+            strip_start = start + (len(text[start:end]) - len(text[start:end].lstrip()))
+            strip_end = end - (len(text[start:end]) - len(text[start:end].rstrip()))
+
+            yield ChunkInfo(
+                content=chunk,
+                chunk_index=chunk_index,
+                start_char=strip_start,
+                end_char=strip_end,
+                start_line=count_lines_before(text, strip_start),
+                end_line=count_lines_before(text, strip_end),
+            )
+            chunk_index += 1
 
         # Move start, accounting for overlap
         start = end - char_overlap
@@ -84,8 +127,15 @@ def read_text_file(filepath: Path) -> str:
     return filepath.read_text(encoding="utf-8", errors="ignore")
 
 
-def read_pdf_file(filepath: Path) -> str:
-    """Read a PDF file using pypdf."""
+@dataclass
+class PDFContent:
+    """PDF content with page boundary information."""
+    text: str
+    page_boundaries: list[tuple[int, int, int]]  # (page_num, start_char, end_char)
+
+
+def read_pdf_file(filepath: Path) -> PDFContent:
+    """Read a PDF file using pypdf, tracking page boundaries."""
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -94,11 +144,29 @@ def read_pdf_file(filepath: Path) -> str:
 
     reader = PdfReader(filepath)
     text_parts = []
-    for page in reader.pages:
+    page_boundaries = []
+    current_pos = 0
+
+    for page_num, page in enumerate(reader.pages, 1):
         text = page.extract_text()
         if text:
+            start_pos = current_pos
             text_parts.append(text)
-    return "\n\n".join(text_parts)
+            current_pos += len(text) + 2  # +2 for "\n\n" separator
+            page_boundaries.append((page_num, start_pos, current_pos - 2))
+
+    return PDFContent(
+        text="\n\n".join(text_parts),
+        page_boundaries=page_boundaries,
+    )
+
+
+def get_page_for_position(page_boundaries: list[tuple[int, int, int]], char_pos: int) -> int | None:
+    """Find which page a character position belongs to."""
+    for page_num, start, end in page_boundaries:
+        if start <= char_pos <= end:
+            return page_num
+    return None
 
 
 def read_code_file(filepath: Path) -> str:
@@ -169,9 +237,17 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
         ),
         properties=[
             Property(name="content", data_type=DataType.TEXT),
-            Property(name="source", data_type=DataType.TEXT),
+            Property(name="filename", data_type=DataType.TEXT),
+            Property(name="folder", data_type=DataType.TEXT),
+            Property(name="source", data_type=DataType.TEXT),  # Full relative path
             Property(name="chunk_index", data_type=DataType.INT),
             Property(name="file_type", data_type=DataType.TEXT),
+            # Position metadata for source linking
+            Property(name="start_char", data_type=DataType.INT),
+            Property(name="end_char", data_type=DataType.INT),
+            Property(name="start_line", data_type=DataType.INT),
+            Property(name="end_line", data_type=DataType.INT),
+            Property(name="page_number", data_type=DataType.INT),  # For PDFs, nullable
         ]
     )
     print(f"Collection '{collection_name}' created successfully.")
@@ -182,13 +258,13 @@ def ingest_documents(
     documents_dir: Path,
     batch_size: int = 10
 ) -> int:
-    """Ingest documents from directory into Weaviate."""
+    """Ingest documents from directory (recursively) into Weaviate."""
     collection = client.collections.get("Document")
 
     total_chunks = 0
 
-    # Find all supported files
-    files = [f for f in documents_dir.iterdir()
+    # Find all supported files recursively
+    files = [f for f in documents_dir.rglob("*")
              if f.is_file() and f.suffix.lower() in SUPPORTED_EXTENSIONS]
 
     if not files:
@@ -199,14 +275,27 @@ def ingest_documents(
     print(f"Found {len(files)} document(s) to process")
 
     for filepath in files:
-        print(f"\nProcessing: {filepath.name}")
+        # Calculate relative path from documents_dir
+        rel_path = filepath.relative_to(documents_dir)
+        folder = str(rel_path.parent) if rel_path.parent != Path(".") else ""
+        filename = filepath.name
+        source = str(rel_path)  # Full relative path
+
+        print(f"\nProcessing: {source}")
 
         try:
-            # Read document
-            text = read_document(filepath)
             file_type = get_file_type(filepath)
+            page_boundaries = None
 
-            # Chunk document
+            # Read document (handle PDFs specially for page tracking)
+            if file_type == "pdf":
+                pdf_content = read_pdf_file(filepath)
+                text = pdf_content.text
+                page_boundaries = pdf_content.page_boundaries
+            else:
+                text = read_document(filepath)
+
+            # Chunk document with position tracking
             chunks = list(chunk_text(text))
             print(f"  - {len(chunks)} chunks ({estimate_tokens(text)} estimated tokens)")
 
@@ -215,15 +304,27 @@ def ingest_documents(
             failed = 0
             for i in range(0, len(chunks), batch_size):
                 batch_chunks = chunks[i:i + batch_size]
-                objects = [
-                    {
-                        "content": chunk,
-                        "source": filepath.name,
-                        "chunk_index": i + idx,
+                objects = []
+
+                for chunk_info in batch_chunks:
+                    # Determine page number for PDFs
+                    page_num = None
+                    if page_boundaries:
+                        page_num = get_page_for_position(page_boundaries, chunk_info.start_char)
+
+                    objects.append({
+                        "content": chunk_info.content,
+                        "filename": filename,
+                        "folder": folder,
+                        "source": source,
+                        "chunk_index": chunk_info.chunk_index,
                         "file_type": file_type,
-                    }
-                    for idx, chunk in enumerate(batch_chunks)
-                ]
+                        "start_char": chunk_info.start_char,
+                        "end_char": chunk_info.end_char,
+                        "start_line": chunk_info.start_line,
+                        "end_line": chunk_info.end_line,
+                        "page_number": page_num,
+                    })
 
                 try:
                     result = collection.data.insert_many(objects)
@@ -245,7 +346,7 @@ def ingest_documents(
             print(f"  - Inserted {inserted} chunks" + (f" ({failed} failed)" if failed else ""))
 
         except Exception as e:
-            print(f"  - Error processing {filepath.name}: {e}")
+            print(f"  - Error processing {source}: {e}")
 
     return total_chunks
 
