@@ -6,7 +6,7 @@ Agentic RAG chatbot built with Pydantic AI, Weaviate vector database, and local 
 
 - **Hybrid Search** - Combines BM25 keyword search with semantic vector search (configurable alpha)
 - **3 RAG Modes** - Auto (agent decides), Force (always search), Disabled (plain chat)
-- **Multimodal Support** - Image + text RAG with CLIP embeddings and LLaVA vision model
+- **Multimodal Support** - Image + text RAG with CLIP embeddings and VLM analysis at query time
 - **Conversation Memory** - Multi-turn conversations with full context via `message_history`
 - **Token Tracking** - Real-time token usage display with context limit warnings
 - **Local Inference** - GPU-accelerated LLM and embedding generation via Ollama
@@ -124,6 +124,8 @@ Environment variables (set in `docker-compose.yml`):
 | `WEAVIATE_URL` | `http://weaviate:8080` | Weaviate endpoint |
 | `CHAT_MODEL` | `llama3.2` | LLM for chat |
 | `EMBED_MODEL` | `nomic-embed-text` | Model for embeddings |
+| `CHAT_MODEL_MULTIMODAL` | `mistral-small3.1` | Vision-language model for multimodal |
+| `MULTIMODAL_MODE` | `false` | Enable multimodal mode |
 
 ## Configuration Modes
 
@@ -142,14 +144,30 @@ Uses text embeddings for document retrieval.
 
 ### Multimodal Mode
 
-Uses CLIP embeddings for cross-modal (text + image) retrieval.
+Uses CLIP embeddings for cross-modal (text + image) retrieval with VLM analysis at query time.
 
 | Component | Value |
 |-----------|-------|
 | Embedding | `CLIP ViT-B-32` via multi2vec-clip |
-| Chat Model | `llava:34b` (vision-language model) |
+| Chat Model | `mistral-small3.1` (vision + tool calling) |
 | Collection | `MultimodalDocument` |
 | Best for | Mixed text and images |
+
+**Architecture:**
+```
+Ingestion:
+  Image → CLIP embedding → Store embedding + raw blob in Weaviate
+  Text  → CLIP embedding → Store embedding + content in Weaviate
+
+Query time:
+  Query → CLIP embedding → Retrieve top-K results
+                              ↓
+              For image results: extract raw blobs
+                              ↓
+              Pass query + images to mistral-small3.1
+                              ↓
+              VLM reasons over actual images (not pre-generated captions)
+```
 
 **To enable multimodal mode:**
 
@@ -165,15 +183,18 @@ Uses CLIP embeddings for cross-modal (text + image) retrieval.
    ```
 
 **Notes:**
-- `llava:34b` is ~20GB and requires 24GB+ VRAM
-- Use `llava:13b` (~7.7GB) for less VRAM usage by setting `CHAT_MODEL_MULTIMODAL=llava:13b`
-- Images are captioned during ingestion using LLaVA, enabling BM25 keyword search on image content
-- Hybrid search works across both text and images: BM25 searches text/captions, CLIP handles semantic similarity
+- `mistral-small3.1` is ~13GB quantized, requires ~24GB VRAM for good performance
+- Images are stored as raw blobs during ingestion (no caption generation - faster ingestion)
+- At query time, retrieved images are passed directly to the VLM for analysis
+- Hybrid search: text uses BM25 + vector, images use vector-only search (CLIP)
+- Up to 3 images are passed to the VLM per query to avoid context overflow
 
 ## Troubleshooting
 
-**Models not loading**: Check Ollama logs with `docker logs ollama`. First startup downloads ~2GB of models (more for multimodal mode with llava:34b).
+**Models not loading**: Check Ollama logs with `docker logs ollama`. First startup downloads ~2GB of models (more for multimodal mode with mistral-small3.1).
 
 **Weaviate connection errors**: Ensure Weaviate is healthy with `docker compose ps`. The app will show connection status.
 
-**Out of GPU memory**: llama3.2 (3B) requires ~4GB VRAM. For multimodal mode, llava:34b requires 24GB+ VRAM. Use llava:13b for less VRAM usage.
+**Out of GPU memory**: llama3.2 (3B) requires ~4GB VRAM. For multimodal mode, mistral-small3.1 requires ~24GB VRAM.
+
+**Images not being analyzed**: Ensure you're using "Force" RAG mode, as "Auto" mode may not always trigger search. Images require explicit BLOB property retrieval from Weaviate.
