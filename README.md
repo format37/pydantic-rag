@@ -57,17 +57,21 @@ cp /path/to/your/docs/* data/documents/
 
 # Install dependencies and run ingestion
 pip install weaviate-client pypdf
-python scripts/ingest.py
+python scripts/ingest.py --name "my project"
 ```
 
 **Ingestion options**:
 ```bash
 python scripts/ingest.py --help
-python scripts/ingest.py --reset                       # Delete and recreate collection
-python scripts/ingest.py --documents-dir ./my-docs     # Custom source folder
-python scripts/ingest.py --extensions .py,.md          # Only Python and Markdown files
-python scripts/ingest.py --extensions .yml,Dockerfile  # Extensions and exact filenames
+python scripts/ingest.py --reset                                  # Reset collection only (no ingestion)
+python scripts/ingest.py --name "my project" --reset              # Delete and recreate collection, then ingest
+python scripts/ingest.py --name "eu ai regulations" --extensions .pdf  # Only PDFs with label
+python scripts/ingest.py --name "docs" --documents-dir ./my-docs  # Custom source folder
+python scripts/ingest.py --name "code" --extensions .py,.md       # Only Python and Markdown files
+python scripts/ingest.py --name "config" --extensions .yml,Dockerfile  # Extensions and exact filenames
 ```
+
+> **Note**: The `--name` option is required when ingesting documents. Use `--reset` alone to recreate the schema without ingesting.
 
 Documents are chunked (800 tokens, 200 overlap) and embedded automatically by Weaviate's text2vec-ollama module.
 

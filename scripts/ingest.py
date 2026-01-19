@@ -7,11 +7,11 @@ and stores in Weaviate with position metadata for source linking.
 Weaviate's text2vec-ollama module handles embedding automatically.
 
 Usage:
-    python scripts/ingest.py [--weaviate-url URL] [--ollama-url URL]
-    python scripts/ingest.py --reset                       # Delete collection and re-ingest
-    python scripts/ingest.py --documents-dir ./my-docs     # Custom source folder
-    python scripts/ingest.py --extensions .py,.md          # Only specific file types
-    python scripts/ingest.py --extensions .yml,Dockerfile  # Extensions and exact filenames
+    python scripts/ingest.py --name "my project"                      # Ingest with name/label (required)
+    python scripts/ingest.py --name "my project" --reset              # Delete collection and re-ingest
+    python scripts/ingest.py --reset                                  # Reset collection only (no ingestion)
+    python scripts/ingest.py --name "docs" --documents-dir ./my-docs  # Custom source folder
+    python scripts/ingest.py --name "code" --extensions .py,.md       # Only specific file types
 """
 
 import argparse
@@ -250,6 +250,7 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
             Property(name="filename", data_type=DataType.TEXT),
             Property(name="folder", data_type=DataType.TEXT),
             Property(name="source", data_type=DataType.TEXT),  # Full relative path
+            Property(name="name", data_type=DataType.TEXT),  # Document set name/label
             Property(name="chunk_index", data_type=DataType.INT),
             Property(name="file_type", data_type=DataType.TEXT),
             # Position metadata for source linking
@@ -266,6 +267,7 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
 def ingest_documents(
     client: weaviate.WeaviateClient,
     documents_dir: Path,
+    name: str,
     batch_size: int = 10,
     extensions: set[str] | None = None,
     filenames: set[str] | None = None
@@ -275,6 +277,7 @@ def ingest_documents(
     Args:
         client: Weaviate client connection
         documents_dir: Directory to scan for documents
+        name: Name/label for the ingested documents (e.g., 'pydantic rag project')
         batch_size: Number of chunks to insert per batch
         extensions: Set of file extensions to include (e.g., {'.py', '.md'}).
                    If None and filenames is None, uses all SUPPORTED_EXTENSIONS.
@@ -360,6 +363,7 @@ def ingest_documents(
                         "filename": filename,
                         "folder": folder,
                         "source": source,
+                        "name": name,
                         "chunk_index": chunk_info.chunk_index,
                         "file_type": file_type,
                         "start_char": chunk_info.start_char,
@@ -422,6 +426,12 @@ def main():
         default=None,
         help="Comma-separated extensions or filenames (e.g., '.py,.yml,Dockerfile'). Default: all supported"
     )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Name/label for the ingested documents (e.g., 'pydantic rag project'). Required when ingesting."
+    )
     args = parser.parse_args()
 
     # Resolve documents directory relative to project root
@@ -456,8 +466,17 @@ def main():
         # Create or reset collection
         if args.reset or not client.collections.exists("Document"):
             create_collection(client, args.ollama_url)
+            # If reset-only (no --name), exit after resetting
+            if args.reset and not args.name:
+                print("\nCollection reset complete. Use --name to ingest documents.")
+                return
         else:
             print("Using existing 'Document' collection (use --reset to recreate)")
+
+        # Require --name for ingestion
+        if not args.name:
+            print("Error: --name is required when ingesting documents")
+            sys.exit(1)
 
         # Parse extensions/filenames if provided
         extensions = None
@@ -491,7 +510,8 @@ def main():
             print(f"Filtering for {'; '.join(filter_parts)}")
 
         # Ingest documents
-        total = ingest_documents(client, documents_dir, extensions=extensions, filenames=filenames)
+        print(f"Ingesting with name: '{args.name}'")
+        total = ingest_documents(client, documents_dir, name=args.name, extensions=extensions, filenames=filenames)
 
         print(f"\nIngestion complete: {total} chunks stored in Weaviate")
 
