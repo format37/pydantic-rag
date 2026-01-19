@@ -6,6 +6,7 @@ Agentic RAG chatbot built with Pydantic AI, Weaviate vector database, and local 
 
 - **Hybrid Search** - Combines BM25 keyword search with semantic vector search (configurable alpha)
 - **3 RAG Modes** - Auto (agent decides), Force (always search), Disabled (plain chat)
+- **Multimodal Support** - Image + text RAG with CLIP embeddings and LLaVA vision model
 - **Conversation Memory** - Multi-turn conversations with full context via `message_history`
 - **Token Tracking** - Real-time token usage display with context limit warnings
 - **Local Inference** - GPU-accelerated LLM and embedding generation via Ollama
@@ -69,6 +70,8 @@ python scripts/ingest.py --name "eu ai regulations" --extensions .pdf  # Only PD
 python scripts/ingest.py --name "docs" --documents-dir ./my-docs  # Custom source folder
 python scripts/ingest.py --name "code" --extensions .py,.md       # Only Python and Markdown files
 python scripts/ingest.py --name "config" --extensions .yml,Dockerfile  # Extensions and exact filenames
+python scripts/ingest.py --name "images" --multimodal             # Multimodal mode with CLIP (includes images)
+python scripts/ingest.py --name "mm-docs" --multimodal --reset    # Reset and reingest in multimodal mode
 ```
 
 > **Note**: The `--name` option is required when ingesting documents. Use `--reset` alone to recreate the schema without ingesting.
@@ -122,10 +125,55 @@ Environment variables (set in `docker-compose.yml`):
 | `CHAT_MODEL` | `llama3.2` | LLM for chat |
 | `EMBED_MODEL` | `nomic-embed-text` | Model for embeddings |
 
+## Configuration Modes
+
+The system supports two operating modes:
+
+### Text-Only Mode (Default)
+
+Uses text embeddings for document retrieval.
+
+| Component | Value |
+|-----------|-------|
+| Embedding | `nomic-embed-text` via text2vec-ollama |
+| Chat Model | `llama3.2` |
+| Collection | `Document` |
+| Best for | Pure text documents |
+
+### Multimodal Mode
+
+Uses CLIP embeddings for cross-modal (text + image) retrieval.
+
+| Component | Value |
+|-----------|-------|
+| Embedding | `CLIP ViT-B-32` via multi2vec-clip |
+| Chat Model | `llava:34b` (vision-language model) |
+| Collection | `MultimodalDocument` |
+| Best for | Mixed text and images |
+
+**To enable multimodal mode:**
+
+1. Ensure `multi2vec-clip` container is running (included in docker-compose.yml)
+2. Set `MULTIMODAL_MODE=true` in docker-compose.yml for the app service
+3. Ingest documents with the `--multimodal` flag:
+   ```bash
+   python scripts/ingest.py --name "my docs" --multimodal
+   ```
+4. Restart the app:
+   ```bash
+   docker compose up -d --build app
+   ```
+
+**Notes:**
+- `llava:34b` is ~20GB and requires 24GB+ VRAM
+- Use `llava:13b` (~7.7GB) for less VRAM usage by setting `CHAT_MODEL_MULTIMODAL=llava:13b`
+- Images are captioned during ingestion using LLaVA, enabling BM25 keyword search on image content
+- Hybrid search works across both text and images: BM25 searches text/captions, CLIP handles semantic similarity
+
 ## Troubleshooting
 
-**Models not loading**: Check Ollama logs with `docker logs ollama`. First startup downloads ~2GB of models.
+**Models not loading**: Check Ollama logs with `docker logs ollama`. First startup downloads ~2GB of models (more for multimodal mode with llava:34b).
 
 **Weaviate connection errors**: Ensure Weaviate is healthy with `docker compose ps`. The app will show connection status.
 
-**Out of GPU memory**: llama3.2 (3B) requires ~4GB VRAM. For larger models, adjust `CHAT_MODEL` or use CPU inference.
+**Out of GPU memory**: llama3.2 (3B) requires ~4GB VRAM. For multimodal mode, llava:34b requires 24GB+ VRAM. Use llava:13b for less VRAM usage.

@@ -29,8 +29,10 @@ from weaviate.classes.config import Configure, Property, DataType
 TEXT_EXTENSIONS = {".txt", ".md"}
 CODE_EXTENSIONS = {".py", ".c", ".h", ".cu", ".cpp", ".js", ".ts"}
 PDF_EXTENSIONS = {".pdf"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS | CODE_EXTENSIONS | PDF_EXTENSIONS
+MULTIMODAL_EXTENSIONS = SUPPORTED_EXTENSIONS | IMAGE_EXTENSIONS
 
 # Chunking parameters
 CHUNK_SIZE = 800  # tokens (approximate as chars / 4)
@@ -222,6 +224,8 @@ def get_file_type(filepath: Path) -> str:
         return "code"
     elif ext in PDF_EXTENSIONS:
         return "pdf"
+    elif ext in IMAGE_EXTENSIONS:
+        return "image"
     return "text"  # Treat unknown as text
 
 
@@ -259,6 +263,44 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
             Property(name="start_line", data_type=DataType.INT),
             Property(name="end_line", data_type=DataType.INT),
             Property(name="page_number", data_type=DataType.INT),  # For PDFs, nullable
+        ]
+    )
+    print(f"Collection '{collection_name}' created successfully.")
+
+
+def create_multimodal_collection(client: weaviate.WeaviateClient) -> None:
+    """Create MultimodalDocument collection with multi2vec-clip vectorizer."""
+    collection_name = "MultimodalDocument"
+
+    # Delete existing collection if it exists
+    if client.collections.exists(collection_name):
+        print(f"Collection '{collection_name}' already exists. Deleting...")
+        client.collections.delete(collection_name)
+
+    print(f"Creating collection '{collection_name}'...")
+    client.collections.create(
+        name=collection_name,
+        vectorizer_config=Configure.Vectorizer.multi2vec_clip(
+            image_fields=["image"],
+            text_fields=["content", "caption"],
+        ),
+        properties=[
+            Property(name="content", data_type=DataType.TEXT),       # Text content or empty for images
+            Property(name="caption", data_type=DataType.TEXT),       # AI-generated for images
+            Property(name="image", data_type=DataType.BLOB),         # Base64 image data
+            Property(name="content_type", data_type=DataType.TEXT),  # "text" | "image"
+            Property(name="filename", data_type=DataType.TEXT),
+            Property(name="folder", data_type=DataType.TEXT),
+            Property(name="source", data_type=DataType.TEXT),        # Full relative path
+            Property(name="name", data_type=DataType.TEXT),          # Document set name/label
+            Property(name="chunk_index", data_type=DataType.INT),
+            Property(name="file_type", data_type=DataType.TEXT),
+            # Position metadata (for text chunks)
+            Property(name="start_char", data_type=DataType.INT),
+            Property(name="end_char", data_type=DataType.INT),
+            Property(name="start_line", data_type=DataType.INT),
+            Property(name="end_line", data_type=DataType.INT),
+            Property(name="page_number", data_type=DataType.INT),
         ]
     )
     print(f"Collection '{collection_name}' created successfully.")
@@ -398,6 +440,183 @@ def ingest_documents(
     return total_chunks
 
 
+def ingest_multimodal_documents(
+    client: weaviate.WeaviateClient,
+    documents_dir: Path,
+    name: str,
+    batch_size: int = 10,
+    extensions: set[str] | None = None,
+    filenames: set[str] | None = None
+) -> int:
+    """Ingest documents and images into Weaviate MultimodalDocument collection.
+
+    Images are stored as raw blobs without caption generation. The VLM (mistral-small3.1)
+    will analyze images at query time, providing more accurate and context-aware responses.
+
+    Args:
+        client: Weaviate client connection
+        documents_dir: Directory to scan for documents and images
+        name: Name/label for the ingested documents
+        batch_size: Number of chunks to insert per batch
+        extensions: Set of file extensions to include.
+                   If None and filenames is None, uses MULTIMODAL_EXTENSIONS.
+        filenames: Set of exact filenames to include.
+    """
+    import base64
+
+    collection = client.collections.get("MultimodalDocument")
+
+    total_items = 0
+
+    # Determine filtering mode
+    use_custom_filter = extensions or filenames
+
+    def file_matches(f: Path) -> bool:
+        """Check if file matches the filter criteria."""
+        if not use_custom_filter:
+            # Default: use MULTIMODAL_EXTENSIONS (includes images)
+            return f.suffix.lower() in MULTIMODAL_EXTENSIONS
+        # Custom filter: match extension OR exact filename
+        if extensions and f.suffix.lower() in extensions:
+            return True
+        if filenames and f.name in filenames:
+            return True
+        return False
+
+    # Find all matching files recursively
+    files = [f for f in documents_dir.rglob("*") if f.is_file() and file_matches(f)]
+
+    if not files:
+        print(f"No documents found in {documents_dir}")
+        if use_custom_filter:
+            parts = []
+            if extensions:
+                parts.append(f"extensions: {', '.join(sorted(extensions))}")
+            if filenames:
+                parts.append(f"filenames: {', '.join(sorted(filenames))}")
+            print(f"Looking for {'; '.join(parts)}")
+        else:
+            print(f"Looking for extensions: {', '.join(sorted(MULTIMODAL_EXTENSIONS))}")
+        return 0
+
+    print(f"Found {len(files)} file(s) to process")
+
+    for filepath in files:
+        # Calculate relative path from documents_dir
+        rel_path = filepath.relative_to(documents_dir)
+        folder = str(rel_path.parent) if rel_path.parent != Path(".") else ""
+        filename = filepath.name
+        source = str(rel_path)  # Full relative path
+
+        print(f"\nProcessing: {source}")
+
+        try:
+            file_type = get_file_type(filepath)
+
+            # Handle images differently from text
+            if file_type == "image":
+                print(f"  - Storing image (no caption generation - VLM will analyze at query time)...")
+
+                # Read image as base64
+                with open(filepath, "rb") as f:
+                    image_b64 = base64.b64encode(f.read()).decode()
+
+                obj = {
+                    "content": "",  # No text content for images
+                    "caption": "",  # Empty - VLM will analyze at query time
+                    "image": image_b64,
+                    "content_type": "image",
+                    "filename": filename,
+                    "folder": folder,
+                    "source": source,
+                    "name": name,
+                    "chunk_index": 0,
+                    "file_type": "image",
+                    "start_char": None,
+                    "end_char": None,
+                    "start_line": None,
+                    "end_line": None,
+                    "page_number": None,
+                }
+
+                try:
+                    collection.data.insert(obj)
+                    total_items += 1
+                    print(f"  - Inserted image ({len(image_b64)} bytes base64)")
+                except Exception as e:
+                    print(f"  - Error inserting image: {e}")
+
+            else:
+                # Handle text documents (same logic as ingest_documents)
+                page_boundaries = None
+
+                if file_type == "pdf":
+                    pdf_content = read_pdf_file(filepath)
+                    text = pdf_content.text
+                    page_boundaries = pdf_content.page_boundaries
+                else:
+                    text = read_document(filepath)
+
+                # Chunk document with position tracking
+                chunks = list(chunk_text(text))
+                print(f"  - {len(chunks)} chunks ({estimate_tokens(text)} estimated tokens)")
+
+                # Insert chunks in small batches
+                inserted = 0
+                failed = 0
+                for i in range(0, len(chunks), batch_size):
+                    batch_chunks = chunks[i:i + batch_size]
+                    objects = []
+
+                    for chunk_info in batch_chunks:
+                        # Determine page number for PDFs
+                        page_num = None
+                        if page_boundaries:
+                            page_num = get_page_for_position(page_boundaries, chunk_info.start_char)
+
+                        objects.append({
+                            "content": chunk_info.content,
+                            "caption": "",  # No caption for text
+                            "image": None,  # No image data for text
+                            "content_type": "text",
+                            "filename": filename,
+                            "folder": folder,
+                            "source": source,
+                            "name": name,
+                            "chunk_index": chunk_info.chunk_index,
+                            "file_type": file_type,
+                            "start_char": chunk_info.start_char,
+                            "end_char": chunk_info.end_char,
+                            "start_line": chunk_info.start_line,
+                            "end_line": chunk_info.end_line,
+                            "page_number": page_num,
+                        })
+
+                    try:
+                        result = collection.data.insert_many(objects)
+                        if result.has_errors:
+                            for err in result.errors.values():
+                                print(f"    Batch error: {err.message}")
+                            failed += len([e for e in result.errors.values()])
+                            inserted += len(batch_chunks) - len(result.errors)
+                        else:
+                            inserted += len(batch_chunks)
+
+                        # Progress indicator
+                        print(f"  - Progress: {min(i + batch_size, len(chunks))}/{len(chunks)} chunks", end="\r")
+                    except Exception as e:
+                        print(f"    Batch {i//batch_size + 1} failed: {e}")
+                        failed += len(batch_chunks)
+
+                total_items += inserted
+                print(f"  - Inserted {inserted} chunks" + (f" ({failed} failed)" if failed else ""))
+
+        except Exception as e:
+            print(f"  - Error processing {source}: {e}")
+
+    return total_items
+
+
 def main():
     parser = argparse.ArgumentParser(description="Ingest documents into Weaviate")
     parser.add_argument(
@@ -432,6 +651,11 @@ def main():
         default=None,
         help="Name/label for the ingested documents (e.g., 'pydantic rag project'). Required when ingesting."
     )
+    parser.add_argument(
+        "--multimodal",
+        action="store_true",
+        help="Use multimodal mode with CLIP embeddings (creates MultimodalDocument collection)"
+    )
     args = parser.parse_args()
 
     # Resolve documents directory relative to project root
@@ -463,15 +687,26 @@ def main():
 
         print("Connected to Weaviate")
 
+        # Determine which collection to use based on mode
+        if args.multimodal:
+            collection_name = "MultimodalDocument"
+            print("Mode: Multimodal (CLIP + LLaVA)")
+        else:
+            collection_name = "Document"
+            print("Mode: Text-only (nomic-embed-text + llama3.2)")
+
         # Create or reset collection
-        if args.reset or not client.collections.exists("Document"):
-            create_collection(client, args.ollama_url)
+        if args.reset or not client.collections.exists(collection_name):
+            if args.multimodal:
+                create_multimodal_collection(client)
+            else:
+                create_collection(client, args.ollama_url)
             # If reset-only (no --name), exit after resetting
             if args.reset and not args.name:
-                print("\nCollection reset complete. Use --name to ingest documents.")
+                print(f"\nCollection '{collection_name}' reset complete. Use --name to ingest documents.")
                 return
         else:
-            print("Using existing 'Document' collection (use --reset to recreate)")
+            print(f"Using existing '{collection_name}' collection (use --reset to recreate)")
 
         # Require --name for ingestion
         if not args.name:
@@ -511,9 +746,17 @@ def main():
 
         # Ingest documents
         print(f"Ingesting with name: '{args.name}'")
-        total = ingest_documents(client, documents_dir, name=args.name, extensions=extensions, filenames=filenames)
-
-        print(f"\nIngestion complete: {total} chunks stored in Weaviate")
+        if args.multimodal:
+            total = ingest_multimodal_documents(
+                client, documents_dir,
+                name=args.name,
+                extensions=extensions,
+                filenames=filenames
+            )
+            print(f"\nIngestion complete: {total} items stored in Weaviate (MultimodalDocument)")
+        else:
+            total = ingest_documents(client, documents_dir, name=args.name, extensions=extensions, filenames=filenames)
+            print(f"\nIngestion complete: {total} chunks stored in Weaviate (Document)")
 
     except Exception as e:
         print(f"Error: {e}")

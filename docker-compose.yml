@@ -18,6 +18,21 @@ services:
     ports:
       - "11434:11434"
 
+  multi2vec-clip:
+    image: cr.weaviate.io/semitechnologies/multi2vec-clip:sentence-transformers-clip-ViT-B-32-multilingual-v1
+    container_name: multi2vec-clip
+    environment:
+      ENABLE_CUDA: '1'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - rag-network
+
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:latest
     container_name: weaviate
@@ -28,7 +43,8 @@ services:
       QUERY_DEFAULTS_LIMIT: 25
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
       PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
-      ENABLE_MODULES: 'text2vec-ollama,generative-ollama'
+      ENABLE_MODULES: 'text2vec-ollama,generative-ollama,multi2vec-clip'
+      CLIP_INFERENCE_API: 'http://multi2vec-clip:8080'
       CLUSTER_HOSTNAME: 'node1'
     volumes:
       - ./data/weaviate:/var/lib/weaviate
@@ -36,6 +52,7 @@ services:
       - rag-network
     depends_on:
       - ollama
+      - multi2vec-clip
 
   app:
     build:
@@ -47,6 +64,8 @@ services:
       - WEAVIATE_URL=http://weaviate:8080
       - EMBED_MODEL=nomic-embed-text
       - CHAT_MODEL=llama3.2
+      - CHAT_MODEL_MULTIMODAL=mistral-small3.1
+      - MULTIMODAL_MODE=true
     depends_on:
       - ollama
       - weaviate

@@ -9,5 +9,10 @@ sleep 5
 ollama pull nomic-embed-text
 ollama pull llama3.2
 
+# Vision-language model for multimodal RAG
+# mistral-small3.1 supports BOTH vision AND tool calling
+# ~13GB quantized, needs ~24GB VRAM for good performance
+ollama pull mistral-small3.1
+
 # Keep container running
 wait

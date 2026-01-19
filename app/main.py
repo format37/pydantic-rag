@@ -7,12 +7,14 @@ import time
 import gradio as gr
 import httpx
 
-from agent import RAGDeps, create_weaviate_client, get_agent, get_available_names
+from agent import RAGDeps, create_weaviate_client, get_agent, get_multimodal_agent, get_available_names, run_multimodal_with_images
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 WEAVIATE_URL = os.getenv("WEAVIATE_URL", "http://weaviate:8080")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 CHAT_MODEL = os.getenv("CHAT_MODEL", "llama3.2")
+CHAT_MODEL_MULTIMODAL = os.getenv("CHAT_MODEL_MULTIMODAL", "llava:34b")
+MULTIMODAL_MODE = os.getenv("MULTIMODAL_MODE", "false").lower() == "true"
 
 # Global Weaviate client
 _weaviate_client = None
@@ -45,7 +47,7 @@ def fetch_document_names() -> list[str]:
     try:
         client = get_weaviate_client()
         if client and client.is_ready():
-            return get_available_names(client)
+            return get_available_names(client, multimodal=MULTIMODAL_MODE)
     except Exception:
         pass
     return []
@@ -118,6 +120,9 @@ async def rag_chat(
         client = get_weaviate_client()
         rag_mode_lower = rag_mode.lower()
 
+        # Determine collection name based on mode
+        collection_name = "MultimodalDocument" if MULTIMODAL_MODE else "Document"
+
         # Only check Weaviate connection for RAG-enabled modes
         if rag_mode_lower != "disabled":
             if client is None:
@@ -130,10 +135,10 @@ async def rag_chat(
             # Check if collection exists
             try:
                 collections = client.collections.list_all()
-                if "Document" not in [c for c in collections]:
+                if collection_name not in [c for c in collections]:
                     history.append({
                         "role": "assistant",
-                        "content": "Error: Document collection not found. Please ingest documents first."
+                        "content": f"Error: {collection_name} collection not found. Please ingest documents first."
                     })
                     return history, "", message_history, ""
             except Exception as e:
@@ -146,32 +151,49 @@ async def rag_chat(
         # Create dependencies with user-configured retrieval settings
         deps = RAGDeps(
             weaviate_client=client,
-            collection_name="Document",
+            collection_name=collection_name,
+            multimodal=MULTIMODAL_MODE,
             num_chunks=int(num_chunks),
             chunk_content_size=int(chunk_content_size),
             name_filter=name_filter if name_filter else None,
         )
-        agent = get_agent(rag_mode_lower)
 
-        start = time.time()
-        result = await agent.run(
-            message,
-            deps=deps,
-            message_history=message_history,
-        )
-        elapsed = time.time() - start
+        # Use the appropriate agent based on mode
+        if MULTIMODAL_MODE:
+            agent = get_multimodal_agent(rag_mode_lower)
 
-        # Update message history for conversation memory
-        new_message_history = result.all_messages()
+            start = time.time()
+            # Use the image injection wrapper for multimodal mode
+            output, new_message_history, usage = await run_multimodal_with_images(
+                agent,
+                message,
+                deps=deps,
+                message_history=message_history,
+            )
+            elapsed = time.time() - start
+        else:
+            agent = get_agent(rag_mode_lower)
+
+            start = time.time()
+            result = await agent.run(
+                message,
+                deps=deps,
+                message_history=message_history,
+            )
+            elapsed = time.time() - start
+
+            # Update message history for conversation memory
+            new_message_history = result.all_messages()
+            output = result.output
+            usage = result.usage()
 
         # Track token usage
-        usage = result.usage()
         total_tokens = usage.total_tokens if usage.total_tokens else (
             (usage.request_tokens or 0) + (usage.response_tokens or 0)
         )
 
         # Build response with timing info
-        response_text = f"{result.output}\n\n_({elapsed:.2f}s)_"
+        response_text = f"{output}\n\n_({elapsed:.2f}s)_"
 
         # Add token warning if approaching limit (8K context for llama3.2)
         token_info = f"Tokens: {total_tokens:,}"
@@ -220,16 +242,18 @@ def check_weaviate_status() -> str:
         collections = client.collections.list_all()
         collection_names = list(collections.keys()) if collections else []
 
-        # Get document count if Document collection exists
-        doc_count = 0
-        if "Document" in collection_names:
-            doc_collection = client.collections.get("Document")
-            doc_count = doc_collection.aggregate.over_all(total_count=True).total_count
+        # Get item count from the active collection
+        active_collection = "MultimodalDocument" if MULTIMODAL_MODE else "Document"
+        item_count = 0
+        if active_collection in collection_names:
+            doc_collection = client.collections.get(active_collection)
+            item_count = doc_collection.aggregate.over_all(total_count=True).total_count
 
+        mode_str = "Multimodal" if MULTIMODAL_MODE else "Text-only"
         return (
-            f"Weaviate: Connected\n"
+            f"Weaviate: Connected ({mode_str} mode)\n"
             f"Collections: {', '.join(collection_names) if collection_names else 'None'}\n"
-            f"Documents: {doc_count} chunks"
+            f"Active: {active_collection} ({item_count} items)"
         )
     except Exception as e:
         return f"Weaviate: Error - {e}"
@@ -258,7 +282,10 @@ with gr.Blocks(title="Pydantic RAG Demo") as demo:
             weaviate_btn.click(check_weaviate_status, outputs=weaviate_status)
 
     with gr.Tab("RAG Chat"):
-        gr.Markdown(f"Chat with documents using **{CHAT_MODEL}** and hybrid search")
+        if MULTIMODAL_MODE:
+            gr.Markdown(f"**Mode: Multimodal** (CLIP embeddings + {CHAT_MODEL_MULTIMODAL} VLM) - Chat with documents and images")
+        else:
+            gr.Markdown(f"**Mode: Text-only** ({CHAT_MODEL} + nomic-embed-text) - Chat with documents")
 
         # Session state for Pydantic AI message history (per-user session isolation)
         message_history_state = gr.State(value=[])
@@ -351,8 +378,16 @@ if __name__ == "__main__":
     print(f"Starting Gradio app...")
     print(f"Ollama URL: {OLLAMA_BASE_URL}")
     print(f"Weaviate URL: {WEAVIATE_URL}")
-    print(f"Embed model: {EMBED_MODEL}")
-    print(f"Chat model: {CHAT_MODEL}")
+    print(f"Multimodal mode: {MULTIMODAL_MODE}")
+    if MULTIMODAL_MODE:
+        print(f"Chat model: {CHAT_MODEL_MULTIMODAL} (vision + tools)")
+        print(f"Embed model: CLIP ViT-B-32 (multi2vec-clip)")
+        print(f"Collection: MultimodalDocument")
+        print(f"Image analysis: VLM at query time (no pre-generated captions)")
+    else:
+        print(f"Chat model: {CHAT_MODEL}")
+        print(f"Embed model: {EMBED_MODEL}")
+        print(f"Collection: Document")
 
     try:
         demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
