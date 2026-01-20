@@ -4,7 +4,7 @@ This directory contains scripts for evaluating the multimodal RAG system using t
 
 ## Overview
 
-MRAG-Bench is a benchmark for evaluating multimodal retrieval-augmented generation systems. It contains 1,353 multiple-choice questions across 9 scenarios, where answering correctly requires retrieving and understanding relevant images from a corpus of ~16K ground-truth images.
+MRAG-Bench is a benchmark for evaluating multimodal retrieval-augmented generation systems. It contains 1,353 multiple-choice questions across 9 scenarios, where answering correctly requires retrieving and understanding relevant images from a corpus of 6,357 ground-truth images.
 
 ## Quick Start
 
@@ -15,23 +15,22 @@ pip install -r benchmark/requirements.txt
 # 2. Create output directory (if data/ is root-owned from Docker)
 sudo mkdir -p data/mrag_bench && sudo chown -R $USER:$USER data/mrag_bench
 
-# 3. Download the dataset
+# 3. Download the dataset (~30 min, downloads images from HuggingFace)
 python -m benchmark.mrag_bench.download --output data/mrag_bench
 
-# 4. Prepare corpus for ingestion
-python -m benchmark.mrag_bench.prepare_corpus
-
-# 5. Ingest into Weaviate (multimodal mode)
-python scripts/ingest.py --name mrag_bench --multimodal
-
-# 6. Start services
+# 4. Start services (need Weaviate running for ingestion)
 docker compose up -d
 
-# 7. Run evaluation (subset for testing)
-python -m benchmark.mrag_bench.evaluate --limit 10 --output benchmark/results/test_run.json
+# 5. Ingest corpus into Weaviate (~20 min for 6,357 images)
+# Note: Use --documents-dir directly instead of symlink (Python rglob doesn't follow symlinks)
+python scripts/ingest.py --name mrag_bench --multimodal --reset --documents-dir data/mrag_bench/corpus
 
-# 8. Run full evaluation
-python -m benchmark.mrag_bench.evaluate --output benchmark/results/full_run.json
+# 6. Test with small subset first (~5 min for 3 questions)
+python -m benchmark.mrag_bench.evaluate --limit 3 --output benchmark/results/test_run.json
+
+# 7. Run full evaluation (~30+ hours for 1,353 questions at ~80s each)
+nohup python -m benchmark.mrag_bench.evaluate --output benchmark/results/full_run.json > benchmark_log.txt 2>&1 &
+tail -f benchmark_log.txt  # Monitor progress
 ```
 
 ## Dataset Structure
@@ -57,8 +56,7 @@ data/mrag_bench/
 | Script | Description |
 |--------|-------------|
 | `download.py` | Download MRAG-Bench from HuggingFace |
-| `prepare_corpus.py` | Symlink corpus for ingestion pipeline |
-| `ingest.py` | Wrapper for document ingestion |
+| `prepare_corpus.py` | Symlink corpus (optional, see Quick Start for direct approach) |
 | `evaluate.py` | Main evaluation client (Gradio API) |
 | `metrics.py` | Accuracy calculation and reporting |
 | `answer_extractor.py` | Extract A/B/C/D from VLM responses |
@@ -133,21 +131,45 @@ python -m benchmark.mrag_bench.metrics benchmark/results/run_001.json
 
 ## Scenarios
 
-MRAG-Bench includes 9 scenarios:
+MRAG-Bench includes 9 scenarios based on visual retrieval challenges:
 
-1. **Artwork** - Art identification and analysis
-2. **Document** - Document understanding
-3. **Illustration** - Illustrated content
-4. **Infographic** - Information graphics
-5. **Map** - Geographic and spatial content
-6. **Medical** - Medical imaging
-7. **Photo** - Photographic content
-8. **Poster** - Poster and advertisement content
-9. **Table** - Tabular data
+| Scenario | Count | Description |
+|----------|-------|-------------|
+| Angle | 322 | Different viewing angles |
+| Partial | 246 | Partial views of objects |
+| Temporal | 149 | Temporal variations |
+| Others | 120 | Other challenges |
+| Obstruction | 108 | Obstructed views |
+| Biological | 102 | Biological subjects |
+| Deformation | 102 | Deformed or altered images |
+| Incomplete | 102 | Incomplete information |
+| Scope | 102 | Scope/zoom variations |
 
 ## Aspects
 
 Questions are categorized by aspect:
 - **Perspective** - Different viewpoints of the same subject
 - **Transformative** - Transformed versions (crops, edits, etc.)
-- **Other** - Other retrieval challenges
+
+## Troubleshooting
+
+**Permission denied when creating data/mrag_bench:**
+```bash
+sudo mkdir -p data/mrag_bench && sudo chown -R $USER:$USER data/mrag_bench
+```
+
+**Ingestion only finds PDF, not benchmark images:**
+Python's `rglob` doesn't follow symlinks. Use `--documents-dir` directly:
+```bash
+python scripts/ingest.py --name mrag_bench --multimodal --reset --documents-dir data/mrag_bench/corpus
+```
+
+**Evaluation runs too fast with 0% accuracy:**
+Check the results JSON for errors. Common issues:
+- API parameter mismatch (fixed in current version)
+- Gradio app not running (`docker compose up -d`)
+
+**Resume interrupted evaluation:**
+```bash
+python -m benchmark.mrag_bench.evaluate --resume benchmark/results/full_run.json --output benchmark/results/full_run.json
+```

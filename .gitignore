@@ -15,3 +15,5 @@ benchmark/mrag_bench/__pycache__/ingest.cpython-311.pyc
 benchmark/mrag_bench/__pycache__/metrics.cpython-311.pyc
 benchmark/mrag_bench/__pycache__/prepare_corpus.cpython-311.pyc
 app/__pycache__/main.cpython-311.pyc
+benchmark_log.txt
+benchmark/results/test_run.json

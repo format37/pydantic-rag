@@ -11,11 +11,12 @@ from PIL import Image
 from tqdm import tqdm
 
 
-def download_mrag_bench(output_dir: str = "data/mrag_bench") -> None:
+def download_mrag_bench(output_dir: str = "data/mrag_bench", skip_download: bool = False) -> None:
     """Download MRAG-Bench dataset and organize files.
 
     Args:
         output_dir: Directory to save the dataset.
+        skip_download: If True, only process metadata from cached dataset (no image saving).
     """
     output_path = Path(output_dir)
     images_dir = output_path / "images"
@@ -40,19 +41,20 @@ def download_mrag_bench(output_dir: str = "data/mrag_bench") -> None:
         # Extract question data
         question_id = item.get("id", idx)
         question_text = item["question"]
-        choices = item["choices"]  # List of choice strings
-        answer_idx = item["answer"]  # Index of correct answer (0-3)
+        # Choices are in separate A, B, C, D keys
+        choices = [item["A"], item["B"], item["C"], item["D"]]
+        answer_letter = item["answer_choice"]  # 'A', 'B', 'C', or 'D'
+        answer_idx = ord(answer_letter) - ord('A')  # Convert to 0-3
         scenario = item.get("scenario", "unknown")
         aspect = item.get("aspect", "unknown")
 
         # Save query image
         query_image = item["image"]
-        if query_image is not None:
-            query_image_path = images_dir / f"question_{idx}.png"
+        query_image_path = images_dir / f"question_{idx}.png"
+        if not skip_download and query_image is not None and not query_image_path.exists():
             if isinstance(query_image, Image.Image):
                 query_image.save(query_image_path)
             else:
-                # Handle case where image might be in different format
                 Image.open(query_image).save(query_image_path)
 
         # Process ground-truth corpus images
@@ -71,10 +73,11 @@ def download_mrag_bench(output_dir: str = "data/mrag_bench") -> None:
 
                 # Only save if not already saved
                 if gt_filename not in corpus_images_saved:
-                    if isinstance(gt_image, Image.Image):
-                        gt_image.save(gt_path)
-                    else:
-                        Image.open(gt_image).save(gt_path)
+                    if not skip_download and not gt_path.exists():
+                        if isinstance(gt_image, Image.Image):
+                            gt_image.save(gt_path)
+                        else:
+                            Image.open(gt_image).save(gt_path)
                     corpus_images_saved.add(gt_filename)
 
                 gt_image_paths.append(str(gt_path.relative_to(output_path)))
@@ -86,7 +89,7 @@ def download_mrag_bench(output_dir: str = "data/mrag_bench") -> None:
             "question": question_text,
             "choices": choices,
             "answer_idx": answer_idx,
-            "answer_letter": chr(65 + answer_idx),  # A, B, C, or D
+            "answer_letter": answer_letter,
             "scenario": scenario,
             "aspect": aspect,
             "query_image": f"images/question_{idx}.png",
@@ -127,9 +130,14 @@ def main():
         default="data/mrag_bench",
         help="Output directory for the dataset",
     )
+    parser.add_argument(
+        "--skip-download",
+        action="store_true",
+        help="Skip image downloads, only generate metadata (use if images already cached)",
+    )
     args = parser.parse_args()
 
-    download_mrag_bench(args.output)
+    download_mrag_bench(args.output, skip_download=args.skip_download)
 
 
 if __name__ == "__main__":

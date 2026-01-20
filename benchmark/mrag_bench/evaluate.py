@@ -124,28 +124,38 @@ def evaluate_question(
 
     try:
         # Call the Gradio API
-        # The API signature matches: rag_chat(message, query_image, history, message_history, rag_mode, name_filter)
+        # The API signature: rag_chat(message, query_image, history, rag_mode, name_filter)
+        # Note: message_history_state is gr.State and not exposed via API
+        # Note: name_filter choices are dynamic in Gradio and not exposed via API
+        # Pass empty list to search all documents (we only have mrag_bench ingested anyway)
         result = client.predict(
             message=formatted_question,
             query_image=handle_file(str(query_image_path)),
             history=[],
-            message_history=[],
             rag_mode="Force",
-            name_filter=name_filter,
+            name_filter=[],
             api_name="/rag_chat",
         )
 
         # Extract the response from result
-        # Result format depends on outputs: [chatbot, msg_input, query_image, message_history_state, token_display]
+        # Result format: (chatbot, msg_input, query_image, token_display)
+        # Chatbot format: [{"role": "assistant", "content": [{"text": "...", "type": "text"}]}]
         if isinstance(result, tuple) and len(result) >= 1:
             chatbot_history = result[0]
             if chatbot_history and len(chatbot_history) > 0:
                 # Get the last assistant message
                 last_message = chatbot_history[-1]
                 if isinstance(last_message, dict):
-                    response = last_message.get("content", "")
+                    content = last_message.get("content", [])
+                    # Content is a list of dicts with 'text' and 'type' keys
+                    if isinstance(content, list) and len(content) > 0:
+                        response = content[0].get("text", "")
+                    elif isinstance(content, str):
+                        response = content
+                    else:
+                        response = str(content)
                 elif isinstance(last_message, (list, tuple)) and len(last_message) > 1:
-                    response = last_message[1]  # (user, assistant) format
+                    response = str(last_message[1])
                 else:
                     response = str(last_message)
             else:
