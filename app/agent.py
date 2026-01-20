@@ -350,13 +350,24 @@ async def run_multimodal_with_images(
     message: str,
     deps: RAGDeps,
     message_history: list | None = None,
+    query_image_path: str | None = None,
 ) -> tuple[str, list, any]:
     """Run multimodal agent with image injection for VLM analysis.
 
     This wrapper:
     1. Runs the agent normally (which may call search_documents tool)
-    2. If images were retrieved, makes a follow-up VLM call with actual images
+    2. If images were retrieved or a query image was provided, makes a follow-up VLM call
     3. Returns the combined response
+
+    Args:
+        agent: The multimodal agent to run.
+        message: User's message.
+        deps: RAG dependencies including Weaviate client.
+        message_history: Previous conversation history.
+        query_image_path: Optional path to user-provided query image.
+
+    Returns:
+        Tuple of (response text, message history, usage stats).
     """
     result = await agent.run(
         message,
@@ -364,12 +375,26 @@ async def run_multimodal_with_images(
         message_history=message_history,
     )
 
-    if deps.retrieved_images:
+    # Load query image if provided
+    query_image_b64 = None
+    if query_image_path:
+        import base64
+        try:
+            with open(query_image_path, "rb") as f:
+                query_image_b64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            pass  # Silently ignore if image can't be loaded
+
+    # Combine query image with retrieved images
+    has_images = query_image_b64 or deps.retrieved_images
+
+    if has_images:
         try:
             vlm_response = await _call_vlm_with_images(
                 query=message,
                 text_context=result.output,
-                images=deps.retrieved_images,
+                retrieved_images=deps.retrieved_images,
+                query_image_b64=query_image_b64,
             )
             final_output = vlm_response if vlm_response else result.output
         except Exception as e:
@@ -383,16 +408,67 @@ async def run_multimodal_with_images(
 async def _call_vlm_with_images(
     query: str,
     text_context: str,
-    images: list[dict],
+    retrieved_images: list[dict],
+    query_image_b64: str | None = None,
 ) -> str | None:
-    """Call VLM directly with images for visual analysis."""
-    if not images:
+    """Call VLM directly with images for visual analysis.
+
+    Args:
+        query: User's question.
+        text_context: Text context from RAG search.
+        retrieved_images: List of retrieved image dicts with 'source' and 'data' keys.
+        query_image_b64: Optional base64-encoded query image from user.
+
+    Returns:
+        VLM response text, or None if no images provided.
+    """
+    if not query_image_b64 and not retrieved_images:
         return None
 
-    image_sources = [f"- Image {i+1}: {img['source']}" for i, img in enumerate(images)]
-    image_sources_text = "\n".join(image_sources)
+    # Build image list and prompt sections
+    all_images = []
+    image_descriptions = []
 
-    prompt = f"""Based on the user's question and the search results below, analyze the retrieved images and provide a comprehensive answer.
+    # Query image comes first (if provided)
+    if query_image_b64:
+        all_images.append(query_image_b64)
+        image_descriptions.append("- Image 1: **Query Image** (provided by user)")
+
+    # Retrieved images follow
+    for i, img in enumerate(retrieved_images[:MAX_IMAGES_FOR_VLM]):
+        all_images.append(img["data"])
+        img_num = len(all_images)
+        image_descriptions.append(f"- Image {img_num}: Retrieved from {img['source']}")
+
+    image_sources_text = "\n".join(image_descriptions)
+
+    # Build prompt based on what images we have
+    if query_image_b64 and retrieved_images:
+        prompt = f"""Based on the user's question, analyze both the query image they provided and the retrieved images from the document corpus.
+
+User Question: {query}
+
+Text Context from Search:
+{text_context}
+
+Images:
+{image_sources_text}
+
+The first image is the user's query image. Compare it with the retrieved images and answer the question. Be specific about visual details you observe in each image."""
+    elif query_image_b64:
+        prompt = f"""Analyze the image provided by the user and answer their question.
+
+User Question: {query}
+
+Text Context from Search:
+{text_context}
+
+Image:
+{image_sources_text}
+
+Please analyze the image and answer the user's question. Be specific about visual details you observe."""
+    else:
+        prompt = f"""Based on the user's question and the search results below, analyze the retrieved images and provide a comprehensive answer.
 
 User Question: {query}
 
@@ -404,15 +480,13 @@ Retrieved Images:
 
 Please analyze the images shown and answer the user's question, incorporating what you see in the images along with the text context. Be specific about visual details you observe."""
 
-    image_data = [img["data"] for img in images]
-
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             f"{OLLAMA_BASE_URL}/api/generate",
             json={
                 "model": CHAT_MODEL_MULTIMODAL,
                 "prompt": prompt,
-                "images": image_data,
+                "images": all_images,
                 "stream": False,
             },
         )

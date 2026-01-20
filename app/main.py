@@ -58,25 +58,27 @@ def fetch_document_names() -> list[str]:
 
 async def rag_chat(
     message: str,
+    query_image: str | None,
     history: list,
     message_history: list,
     rag_mode: str,
     name_filter: list[str],
-) -> tuple[list, str, list, str]:
+) -> tuple[list, str, str | None, list, str]:
     """Gradio handler for RAG-powered chat with conversation memory.
 
     Args:
         message: User's input message.
+        query_image: Optional path to query image for multimodal search.
         history: Gradio chatbot display history.
         message_history: Pydantic AI message history for conversation memory.
         rag_mode: RAG mode selection ("Auto", "Force", "Disabled").
         name_filter: List of document set names to filter by (empty = all).
 
     Returns:
-        Tuple of (updated history, cleared input, updated message_history, token info).
+        Tuple of (updated history, cleared input, cleared image, updated message_history, token info).
     """
     if not message.strip():
-        return history, "", message_history, ""
+        return history, "", None, message_history, ""
 
     # Add user message to display history
     history.append({"role": "user", "content": message})
@@ -96,7 +98,7 @@ async def rag_chat(
                     "role": "assistant",
                     "content": "Error: Could not connect to Weaviate. Please check the connection."
                 })
-                return history, "", message_history, ""
+                return history, "", None, message_history, ""
 
             # Check if collection exists
             try:
@@ -106,13 +108,13 @@ async def rag_chat(
                         "role": "assistant",
                         "content": f"Error: {collection_name} collection not found. Please ingest documents first."
                     })
-                    return history, "", message_history, ""
+                    return history, "", None, message_history, ""
             except Exception as e:
                 history.append({
                     "role": "assistant",
                     "content": f"Error checking collections: {e}"
                 })
-                return history, "", message_history, ""
+                return history, "", None, message_history, ""
 
         # Create dependencies with default retrieval settings
         deps = RAGDeps(
@@ -135,6 +137,7 @@ async def rag_chat(
                 message,
                 deps=deps,
                 message_history=message_history,
+                query_image_path=query_image,
             )
             elapsed = time.time() - start
         else:
@@ -172,14 +175,14 @@ async def rag_chat(
             "content": response_text
         })
 
-        return history, "", new_message_history, token_info
+        return history, "", None, new_message_history, token_info
 
     except Exception as e:
         history.append({
             "role": "assistant",
             "content": f"Error: {e}"
         })
-        return history, "", message_history, ""
+        return history, "", None, message_history, ""
 
 
 def refresh_names():
@@ -226,26 +229,36 @@ with gr.Blocks(title="Pydantic RAG") as demo:
         refresh_names_btn = gr.Button("Refresh List", size="sm", scale=0)
 
     chatbot = gr.Chatbot(height=400)
-    msg_input = gr.Textbox(
-        label="Message",
-        placeholder="Ask a question about your documents...",
-        show_label=False,
-    )
+
+    with gr.Row():
+        msg_input = gr.Textbox(
+            label="Message",
+            placeholder="Ask a question about your documents...",
+            show_label=False,
+            scale=4,
+        )
+        query_image = gr.Image(
+            label="Query Image (optional)",
+            type="filepath",
+            visible=MULTIMODAL_MODE,
+            scale=1,
+        )
+
     with gr.Row():
         reset_btn = gr.Button("Reset Chat", variant="secondary")
 
-    # Reset clears chatbot display, input, message history, and token display
+    # Reset clears chatbot display, input, query image, message history, and token display
     def reset_chat():
-        return [], "", [], ""
+        return [], "", None, [], ""
 
     msg_input.submit(
         rag_chat,
-        inputs=[msg_input, chatbot, message_history_state, rag_mode, name_filter],
-        outputs=[chatbot, msg_input, message_history_state, token_display],
+        inputs=[msg_input, query_image, chatbot, message_history_state, rag_mode, name_filter],
+        outputs=[chatbot, msg_input, query_image, message_history_state, token_display],
     )
     reset_btn.click(
         reset_chat,
-        outputs=[chatbot, msg_input, message_history_state, token_display],
+        outputs=[chatbot, msg_input, query_image, message_history_state, token_display],
     )
     refresh_names_btn.click(refresh_names, outputs=[name_filter])
 
