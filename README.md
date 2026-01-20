@@ -199,3 +199,7 @@ Query time:
 **Out of GPU memory**: llama3.2 (3B) requires ~4GB VRAM. For multimodal mode, mistral-small3.1 requires ~24GB VRAM.
 
 **Images not being analyzed**: Ensure you're using "Force" RAG mode, as "Auto" mode may not always trigger search. Images require explicit BLOB property retrieval from Weaviate.
+
+## Benchmarking
+
+The system can be evaluated using [MRAG-Bench](https://huggingface.co/datasets/uclanlp/MRAG-Bench), a multimodal RAG benchmark with 1,353 questions. See [benchmark/README.md](benchmark/README.md) for setup and usage.

@@ -12,22 +12,25 @@ MRAG-Bench is a benchmark for evaluating multimodal retrieval-augmented generati
 # 1. Install dependencies
 pip install -r benchmark/requirements.txt
 
-# 2. Download the dataset
+# 2. Create output directory (if data/ is root-owned from Docker)
+sudo mkdir -p data/mrag_bench && sudo chown -R $USER:$USER data/mrag_bench
+
+# 3. Download the dataset
 python -m benchmark.mrag_bench.download --output data/mrag_bench
 
-# 3. Prepare corpus for ingestion
+# 4. Prepare corpus for ingestion
 python -m benchmark.mrag_bench.prepare_corpus
 
-# 4. Ingest into Weaviate (multimodal mode)
+# 5. Ingest into Weaviate (multimodal mode)
 python scripts/ingest.py --name mrag_bench --multimodal
 
-# 5. Start services
+# 6. Start services
 docker compose up -d
 
-# 6. Run evaluation (subset for testing)
+# 7. Run evaluation (subset for testing)
 python -m benchmark.mrag_bench.evaluate --limit 10 --output benchmark/results/test_run.json
 
-# 7. Run full evaluation
+# 8. Run full evaluation
 python -m benchmark.mrag_bench.evaluate --output benchmark/results/full_run.json
 ```
 
