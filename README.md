@@ -202,4 +202,15 @@ Query time:
 
 ## Benchmarking
 
-The system can be evaluated using [MRAG-Bench](https://huggingface.co/datasets/uclanlp/MRAG-Bench), a multimodal RAG benchmark with 1,353 questions. See [benchmark/README.md](benchmark/README.md) for setup and usage.
+The system has been evaluated on [MRAG-Bench](https://huggingface.co/datasets/uclanlp/MRAG-Bench), a multimodal RAG benchmark testing vision-language models on multi-image reasoning tasks.
+
+| Metric | Value |
+|--------|-------|
+| Overall Accuracy | 33.7% |
+| Best Scenario | Scope (48.0%) |
+| Best Aspect | Perspective (44.3%) |
+| Questions | 1,353 |
+
+The system performs best on perspective-based reasoning where CLIP retrieval finds relevant reference images. See [benchmark/REPORT.md](benchmark/REPORT.md) for detailed analysis, scenario breakdowns, and baseline comparisons.
+
+For benchmark setup and running your own evaluation, see [benchmark/README.md](benchmark/README.md).
