@@ -19,3 +19,4 @@ benchmark_log.txt
 benchmark/results/test_run.json
 benchmark/results/full_run.json
 benchmark/mrag_bench/__pycache__/plot_results.cpython-311.pyc
+datasets/

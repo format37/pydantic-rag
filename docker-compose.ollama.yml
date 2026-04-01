@@ -1,0 +1,17 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    entrypoint: ["/bin/bash", "/scripts/ollama-entrypoint.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - /mnt/hdd/share/alex/datasets/ollama:/root/.ollama
+      - ./scripts/ollama-entrypoint.sh:/scripts/ollama-entrypoint.sh:ro
+    ports:
+      - "11434:11434"

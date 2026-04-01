@@ -10,6 +10,7 @@ Agentic RAG chatbot built with Pydantic AI, Weaviate vector database, and local 
 - **Conversation Memory** - Multi-turn conversations with full context via `message_history`
 - **Token Tracking** - Real-time token usage display with context limit warnings
 - **Local Inference** - GPU-accelerated LLM and embedding generation via Ollama
+- **MCP Server** - Expose the knowledge base as a Claude Code tool via Model Context Protocol
 
 ## Tech Stack
 
@@ -189,6 +190,72 @@ Query time:
 - At query time, retrieved images are passed directly to the VLM for analysis
 - Hybrid search: text uses BM25 + vector, images use vector-only search (CLIP)
 - Up to 3 images are passed to the VLM per query to avoid context overflow
+
+## MCP Server (Claude Code Integration)
+
+The knowledge base can be exposed as a native tool for [Claude Code](https://claude.ai/code) via the Model Context Protocol (MCP). This lets Claude Code search your documents directly without any manual prompting.
+
+### Setup
+
+1. **Install dependencies on the host** (use the same Python where `weaviate-client` is installed):
+   ```bash
+   pip install mcp weaviate-client
+   ```
+
+2. **Add the server to `~/.config/Claude/claude_desktop_config.json`**:
+   ```json
+   {
+     "mcpServers": {
+       "pydantic-rag": {
+         "command": "/path/to/your/python3",
+         "args": ["/path/to/pydantic-rag/mcp_server.py"],
+         "env": {
+           "WEAVIATE_URL": "http://localhost:8080",
+           "WEAVIATE_GRPC_PORT": "50051"
+         }
+       }
+     }
+   }
+   ```
+   > Replace `/path/to/your/python3` with the Python that has the packages installed (e.g. `/home/alex/anaconda3/bin/python3`). Use `which python3` to find it.
+
+3. **Make sure Weaviate is running**:
+   ```bash
+   docker compose up -d weaviate
+   ```
+
+4. **Restart Claude Desktop** to pick up the new server.
+
+### Available Tools
+
+| Tool | Description |
+|------|-------------|
+| `search_documents` | Hybrid BM25 + vector search returning ranked excerpts with source paths |
+| `list_document_sets` | List available document set names in the collection |
+
+### Tool Parameters
+
+**`search_documents`**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `query` | — | Search query (required) |
+| `n_chunks` | `5` | Number of chunks to retrieve (1–20) |
+| `collection` | `"Document"` | `"Document"` or `"MultimodalDocument"` |
+| `name_filter` | `null` | List of document set names to restrict search to |
+| `chunk_content_size` | `1000` | Max characters per chunk in output (100–4000) |
+
+**`list_document_sets`**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `collection` | `"Document"` | Weaviate collection to inspect |
+
+### Notes
+
+- The MCP server connects directly to Weaviate on the host (port 8080 must be accessible)
+- Uses stdio transport — Claude Code spawns it as a subprocess, no network port needed
+- For text-only mode use collection `"Document"`; for multimodal use `"MultimodalDocument"`
 
 ## Troubleshooting
 

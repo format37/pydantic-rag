@@ -11,7 +11,7 @@ services:
               count: 1
               capabilities: [gpu]
     volumes:
-      - ./data/ollama:/root/.ollama
+      - /mnt/hdd/share/alex/datasets/ollama:/root/.ollama
       - ./scripts/ollama-entrypoint.sh:/scripts/ollama-entrypoint.sh:ro
     networks:
       - rag-network
