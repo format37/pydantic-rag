@@ -48,37 +48,73 @@ Agentic RAG chatbot built with Pydantic AI, Weaviate vector database, and local 
 
 ## Document Ingestion
 
-Place documents in `data/documents/` and run the ingestion script:
+**Important**: place each document set in its own subdirectory under `data/documents/`. The `--name` label applies to all files found in the target directory, so mixing sources in one directory mislabels chunks.
+
+```
+data/documents/
+├── my-project/          ← ingest with --name "my-project"
+│   └── report.pdf
+└── another-source/      ← ingest with --name "another-source"
+    └── notes.txt
+```
 
 ```bash
-# Create documents directory
-mkdir -p data/documents
-
-# Add your documents (supports .txt, .md, .pdf, .py, .js, .ts, .c, .cpp, .cu, .h)
-cp /path/to/your/docs/* data/documents/
-
-# Install dependencies and run ingestion
+# Install dependencies
 pip install weaviate-client pypdf
-python scripts/ingest.py --name "my project"
+
+# Reset collection and ingest each group separately
+python scripts/ingest.py --reset
+python scripts/ingest.py --name "my-project"   --documents-dir data/documents/my-project
+python scripts/ingest.py --name "other-source" --documents-dir data/documents/other-source
 ```
 
 **Ingestion options**:
 ```bash
 python scripts/ingest.py --help
-python scripts/ingest.py --reset                                  # Reset collection only (no ingestion)
-python scripts/ingest.py --name "my project" --reset              # Delete and recreate collection, then ingest
-python scripts/ingest.py --name "eu ai regulations" --extensions .pdf  # Only PDFs with label
-python scripts/ingest.py --name "docs" --documents-dir ./my-docs  # Custom source folder
-python scripts/ingest.py --name "code" --extensions .py,.md       # Only Python and Markdown files
-python scripts/ingest.py --name "config" --extensions .yml,Dockerfile  # Extensions and exact filenames
-python scripts/ingest.py --name "images" --multimodal             # Multimodal mode with CLIP (includes images)
-python scripts/ingest.py --name "mm-docs" --multimodal --reset    # Reset and reingest in multimodal mode
-python scripts/ingest.py --documents-dir /home/alex/projects/prototypes/92-claude-agent-sdk/ --extensions .py,.png,.txt,.md,.sh,.yml,Dockerfile --name "claude agent sdk" --multimodal
+python scripts/ingest.py --reset                                        # Reset collection only (no ingestion)
+python scripts/ingest.py --name "my project" --reset                    # Delete and recreate collection, then ingest
+python scripts/ingest.py --name "eu ai regulations" --extensions .pdf   # Only PDFs with label
+python scripts/ingest.py --name "docs" --documents-dir ./my-docs        # Custom source folder
+python scripts/ingest.py --name "code" --extensions .py,.md             # Only Python and Markdown files
+python scripts/ingest.py --name "config" --extensions .yml,Dockerfile   # Extensions and exact filenames
+python scripts/ingest.py --name "images" --multimodal                   # Multimodal mode with CLIP (includes images)
+python scripts/ingest.py --name "mm-docs" --multimodal --reset          # Reset and reingest in multimodal mode
 ```
 
 > **Note**: The `--name` option is required when ingesting documents. Use `--reset` alone to recreate the schema without ingesting.
 
-Documents are chunked (800 tokens, 200 overlap) and embedded automatically by Weaviate's text2vec-ollama module.
+Documents are chunked (800 tokens, 200 overlap) and embedded automatically by Weaviate's text2vec-ollama module (`bge-m3` by default — supports Russian and 100+ languages).
+
+### Telegram Export Ingestion
+
+To ingest Telegram chat exports (from Telegram Desktop → Export chat history → JSON format):
+
+1. Place export directories under `datasets/telegram_export/` with a `result.json` inside each
+2. Convert to plain text (strips usernames, dates, service messages, and URLs):
+   ```bash
+   python scripts/telegram_to_txt.py
+   # Optional: adjust minimum message length (default 20 chars)
+   python scripts/telegram_to_txt.py --min-chars 30
+   ```
+   This writes one `.txt` per group into `data/documents/<group>/`.
+
+3. Reset and re-ingest:
+   ```bash
+   python scripts/ingest.py --reset
+   for group in japan-justice japan-move-school-visa vmeste-japan; do
+       python scripts/ingest.py --name "$group" --documents-dir "data/documents/$group" --extensions .txt
+   done
+   ```
+
+The conversion script is configured in `scripts/telegram_to_txt.py` → `GROUPS` dict. Add new groups there to extend.
+
+**Current knowledge base** (as of 2026-04-01):
+
+| Document set | Source | Chunks |
+|---|---|---|
+| `japan-justice` | Telegram: Япония: Юридический Чат | 2,590 |
+| `japan-move-school-visa` | Telegram: Japan move/school/visa group | 5,350 |
+| `vmeste-japan` | Telegram: Вместе в Японию | 497 |
 
 ## Usage
 
