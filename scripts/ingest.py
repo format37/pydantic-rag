@@ -235,7 +235,7 @@ def get_file_type(filepath: Path) -> str:
     return "text"  # Treat unknown as text
 
 
-def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
+def create_collection(client: weaviate.WeaviateClient, ollama_url: str, embed_model: str = "bge-m3") -> None:
     """Create the Document collection with text2vec-ollama vectorizer."""
     collection_name = "Document"
 
@@ -249,7 +249,7 @@ def create_collection(client: weaviate.WeaviateClient, ollama_url: str) -> None:
         name=collection_name,
         vectorizer_config=Configure.Vectorizer.text2vec_ollama(
             api_endpoint=ollama_url,
-            model="nomic-embed-text"
+            model=embed_model
         ),
         generative_config=Configure.Generative.ollama(
             api_endpoint=ollama_url,
@@ -636,6 +636,11 @@ def main():
         help="Ollama URL for Weaviate to use (Docker network, default: http://ollama:11434)"
     )
     parser.add_argument(
+        "--embed-model",
+        default=os.environ.get("EMBED_MODEL", "bge-m3"),
+        help="Ollama embedding model (default: bge-m3)"
+    )
+    parser.add_argument(
         "--documents-dir",
         default="data/documents",
         help="Directory containing documents to ingest (default: data/documents)"
@@ -699,14 +704,14 @@ def main():
             logger.info("Mode: Multimodal (CLIP + LLaVA)")
         else:
             collection_name = "Document"
-            logger.info("Mode: Text-only (nomic-embed-text + llama3.2)")
+            logger.info(f"Mode: Text-only ({args.embed_model} + llama3.2)")
 
         # Create or reset collection
         if args.reset or not client.collections.exists(collection_name):
             if args.multimodal:
                 create_multimodal_collection(client)
             else:
-                create_collection(client, args.ollama_url)
+                create_collection(client, args.ollama_url, args.embed_model)
             # If reset-only (no --name), exit after resetting
             if args.reset and not args.name:
                 logger.info(f"Collection '{collection_name}' reset complete. Use --name to ingest documents.")

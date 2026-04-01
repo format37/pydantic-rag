@@ -198,7 +198,7 @@ with gr.Blocks(title="Pydantic RAG") as demo:
     if MULTIMODAL_MODE:
         gr.Markdown(f"**Mode: Multimodal** (CLIP embeddings + {CHAT_MODEL_MULTIMODAL} VLM) - Chat with documents and images")
     else:
-        gr.Markdown(f"**Mode: Text-only** ({CHAT_MODEL} + nomic-embed-text) - Chat with documents")
+        gr.Markdown(f"**Mode: Text-only** ({CHAT_MODEL} + {EMBED_MODEL}) - Chat with documents")
 
     # Session state for Pydantic AI message history (per-user session isolation)
     message_history_state = gr.State(value=[])

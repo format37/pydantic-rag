@@ -62,7 +62,7 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEAVIATE_URL=http://weaviate:8080
-      - EMBED_MODEL=nomic-embed-text
+      - EMBED_MODEL=bge-m3
       - CHAT_MODEL=llama3.2
       - CHAT_MODEL_MULTIMODAL=mistral-small3.1
       - MULTIMODAL_MODE=true
