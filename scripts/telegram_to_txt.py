@@ -8,6 +8,7 @@ Links are stripped; surrounding plain text is kept.
 Usage:
     python scripts/telegram_to_txt.py
     python scripts/telegram_to_txt.py --min-chars 30
+    python scripts/telegram_to_txt.py --export-dir datasets/telegram_export/japan-justice_2026-03
 """
 
 import argparse
@@ -84,22 +85,53 @@ def find_export_dir(prefix: str) -> Path | None:
     return matches[-1] if matches else None
 
 
+def resolve_export_dir(path_arg: str) -> tuple[Path, str]:
+    """Resolve --export-dir argument to (directory, output_name).
+
+    Accepts an absolute path or a path relative to the repo root.
+    Output name is derived by matching the folder name against GROUPS prefixes;
+    falls back to the folder name itself.
+    """
+    p = Path(path_arg)
+    if not p.is_absolute():
+        p = BASE_DIR / p
+    folder_name = p.name
+    name = folder_name  # default: use folder name as-is
+    for prefix, group_name in GROUPS.items():
+        if folder_name.startswith(prefix):
+            name = group_name
+            break
+    return p, name
+
+
 def main():
     parser = argparse.ArgumentParser(description="Convert Telegram exports to plain text")
     parser.add_argument(
         "--min-chars", type=int, default=20,
         help="Minimum character count to keep a message (default: 20)"
     )
+    parser.add_argument(
+        "--export-dir", metavar="DIR",
+        help="Process a single export folder (relative to repo root or absolute). "
+             "When omitted, all groups in GROUPS are processed."
+    )
     args = parser.parse_args()
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    for prefix, name in GROUPS.items():
-        export_dir = find_export_dir(prefix)
-        if not export_dir:
-            print(f"[SKIP] No export dir found for '{prefix}'")
-            continue
+    if args.export_dir:
+        export_dir, name = resolve_export_dir(args.export_dir)
+        jobs = [(export_dir, name)]
+    else:
+        jobs = []
+        for prefix, name in GROUPS.items():
+            export_dir = find_export_dir(prefix)
+            if not export_dir:
+                print(f"[SKIP] No export dir found for '{prefix}'")
+                continue
+            jobs.append((export_dir, name))
 
+    for export_dir, name in jobs:
         json_path = export_dir / "result.json"
         if not json_path.exists():
             print(f"[SKIP] result.json not found in {export_dir}")

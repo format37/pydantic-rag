@@ -92,10 +92,19 @@ To ingest Telegram chat exports (from Telegram Desktop â†’ Export chat history â
 1. Place export directories under `datasets/telegram_export/` with a `result.json` inside each
 2. Convert to plain text (strips usernames, dates, service messages, and URLs):
    ```bash
+   # Process all groups defined in GROUPS dict
    python scripts/telegram_to_txt.py
+
+   # Process a single export folder (useful when appending a new export)
+   python scripts/telegram_to_txt.py --export-dir datasets/telegram_export/japan-justice_2026-03
+
    # Optional: adjust minimum message length (default 20 chars)
    python scripts/telegram_to_txt.py --min-chars 30
    ```
+   `--export-dir` accepts a path relative to the repo root or an absolute path.
+   The output name is derived by matching the folder name against `GROUPS` prefixes;
+   unrecognised folders use the folder name as-is.
+
    This writes one `.txt` per group into `data/documents/<group>/`.
 
 3. Reset and re-ingest:
