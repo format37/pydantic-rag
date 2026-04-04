@@ -66,7 +66,7 @@ def search_documents(
 
         response = coll.query.hybrid(
             query=query,
-            alpha=0.5,
+            alpha=0,  # BM25-only; no Ollama/embeddings required
             limit=max(1, min(20, n_chunks)),
             return_metadata=["score"],
             filters=where_filter,

@@ -1,15 +1,13 @@
 services:
   ollama:
+    profiles: ["app"]
     image: ollama/ollama:latest
     container_name: ollama
+    runtime: nvidia
     entrypoint: ["/bin/bash", "/scripts/ollama-entrypoint.sh"]
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - /mnt/hdd/share/alex/datasets/ollama:/root/.ollama
       - ./scripts/ollama-entrypoint.sh:/scripts/ollama-entrypoint.sh:ro
@@ -19,23 +17,21 @@ services:
       - "11434:11434"
 
   multi2vec-clip:
+    profiles: ["app"]
     image: cr.weaviate.io/semitechnologies/multi2vec-clip:sentence-transformers-clip-ViT-B-32-multilingual-v1
     container_name: multi2vec-clip
+    runtime: nvidia
     environment:
       ENABLE_CUDA: '1'
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
     networks:
       - rag-network
 
   weaviate:
     image: cr.weaviate.io/semitechnologies/weaviate:latest
     container_name: weaviate
+    restart: unless-stopped
     ports:
       - "8080:8080"
       - "50051:50051"
@@ -43,22 +39,20 @@ services:
       QUERY_DEFAULTS_LIMIT: 25
       AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
       PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
-      ENABLE_MODULES: 'text2vec-ollama,generative-ollama,multi2vec-clip'
-      CLIP_INFERENCE_API: 'http://multi2vec-clip:8080'
+      ENABLE_MODULES: 'text2vec-ollama,generative-ollama'
       CLUSTER_HOSTNAME: 'node1'
     volumes:
       - ./data/weaviate:/var/lib/weaviate
     networks:
       - rag-network
-    depends_on:
-      - ollama
-      - multi2vec-clip
 
   app:
+    profiles: ["app"]
     build:
       context: .
       dockerfile: Dockerfile
     container_name: rag-app
+    runtime: nvidia
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEAVIATE_URL=http://weaviate:8080
@@ -67,6 +61,8 @@ services:
       - CHAT_MODEL_MULTIMODAL=mistral-small3.1
       - MULTIMODAL_MODE=true
       - LOG_LEVEL=INFO
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     depends_on:
       - ollama
       - weaviate
