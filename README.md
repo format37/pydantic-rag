@@ -139,6 +139,28 @@ python scripts/ingest.py --name "images" --multimodal                   # CLIP m
 
 Documents are chunked (800 tokens, 200 overlap) and embedded via Weaviate's `text2vec-ollama` module (`bge-m3` by default).
 
+### Removing a single document from the corpus
+
+To delete all chunks for one file without re-ingesting the whole set, filter by `name` (the document set) and `source` (path relative to `--documents-dir`):
+
+```python
+import weaviate
+from weaviate.classes.query import Filter
+
+client = weaviate.connect_to_local(host="localhost", port=8080)
+try:
+    coll = client.collections.get("Document")  # or "MultimodalDocument"
+    flt = (
+        Filter.by_property("name").equal("algo-trading")
+        & Filter.by_property("source").equal("12_lopezdeprado_purged_cv.md")
+    )
+    print(coll.data.delete_many(where=flt))
+finally:
+    client.close()
+```
+
+`source` is the path the file had during ingestion, relative to the `--documents-dir` you passed — e.g. for `python scripts/ingest.py --name algo-trading --documents-dir data/documents/algo-trading`, the source is just the filename. To preview before deleting, swap `delete_many` for `coll.aggregate.over_all(filters=flt, total_count=True)`.
+
 ### Telegram Export Ingestion
 
 To ingest Telegram chat exports (Telegram Desktop → Export chat history → JSON format):
