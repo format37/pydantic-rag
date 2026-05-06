@@ -17,13 +17,29 @@ import re
 import sys
 from pathlib import Path
 
+# Make the project's `scripts` package importable so Marker's
+# `--llm_service scripts.marker_sdk_service.…` can resolve via importlib.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
-def convert(pdf_path: Path, output_dir: Path) -> Path:
+
+def convert(pdf_path: Path, output_dir: Path, use_llm: bool = False) -> Path:
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
     from marker.output import text_from_rendered
 
-    converter = PdfConverter(artifact_dict=create_model_dict())
+    config: dict = {}
+    llm_service: str | None = None
+    if use_llm:
+        config["use_llm"] = True
+        llm_service = "scripts.marker_sdk_service.ClaudeAgentSdkService"
+
+    converter = PdfConverter(
+        artifact_dict=create_model_dict(),
+        config=config or None,
+        llm_service=llm_service,
+    )
     rendered = converter(str(pdf_path))
     text, _ext, images = text_from_rendered(rendered)
 
@@ -53,16 +69,36 @@ def main():
         default=Path("data/documents"),
         help="Output directory for the .md and image folder (default: data/documents)",
     )
+    parser.add_argument(
+        "--use-llm",
+        action="store_true",
+        help="Run Marker's LLM cleanup pass via the Claude Agent SDK (uses Max subscription).",
+    )
+    parser.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="After Marker, run a second SDK pass that reconciles the markdown "
+        "against the source PDF and fixes residual conversion errors "
+        "(HTML <sup>/<sub>, detached minus signs, broken pseudocode, etc.).",
+    )
     args = parser.parse_args()
 
     if not args.pdf.is_file():
         sys.exit(f"PDF not found: {args.pdf}")
 
-    md_path = convert(args.pdf, args.output_dir)
+    md_path = convert(args.pdf, args.output_dir, use_llm=args.use_llm)
     images_dir = args.output_dir / args.pdf.stem
     n_images = len(list(images_dir.iterdir())) if images_dir.exists() else 0
     n_chars = md_path.stat().st_size
     print(f"Wrote {md_path} ({n_chars:,} bytes) and {n_images} image(s) in {images_dir}/")
+
+    if args.cleanup:
+        import anyio
+
+        from scripts.cleanup_md_with_pdf import run as cleanup_run
+
+        print(f"\n--- Pass 2: SDK cleanup against {args.pdf} ---")
+        anyio.run(cleanup_run, args.pdf, md_path)
 
 
 if __name__ == "__main__":

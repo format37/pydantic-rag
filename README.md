@@ -139,6 +139,35 @@ python scripts/ingest.py --name "images" --multimodal                   # CLIP m
 
 Documents are chunked (800 tokens, 200 overlap) and embedded via Weaviate's `text2vec-ollama` module (`bge-m3` by default).
 
+### Converting scientific PDFs to Markdown (Marker + SDK cleanup)
+
+For math-heavy papers, convert PDFs to Markdown *before* ingestion so equations
+land as LaTeX and figures land as referenced image files:
+
+```bash
+pip install marker-pdf claude-agent-sdk
+
+# Pass 1 only — Marker base conversion
+python scripts/convert_pdf.py datasets/RL/foo.pdf --output-dir data/documents/RL
+
+# Two-pass: Marker --use_llm cleanup, then a second SDK agent that reconciles
+# the markdown against the PDF and patches residual errors (HTML <sup>/<sub>,
+# detached minus signs, broken pseudocode line ordering, etc.).
+python scripts/convert_pdf.py datasets/RL/foo.pdf \
+    --output-dir data/documents/RL \
+    --use-llm --cleanup
+```
+
+Output layout: `<output-dir>/<stem>.md` plus a sibling `<output-dir>/<stem>/`
+folder holding the extracted figures. Image refs in the markdown are rewritten
+to `<stem>/<image>.png`, so the pair is portable.
+
+Both `--use-llm` and `--cleanup` route through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python),
+using your local `claude` CLI under your Max subscription — no API charge. The
+cleanup agent has Read + Edit + Grep tools and only patches confirmed residue
+classes; it does not rewrite prose. Typical cost on a 17-page paper: ~$1 of
+SDK-reported quota usage.
+
 ### Removing a single document from the corpus
 
 To delete all chunks for one file without re-ingesting the whole set, filter by `name` (the document set) and `source` (path relative to `--documents-dir`):
