@@ -24,10 +24,13 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 
-def convert(pdf_path: Path, output_dir: Path, use_llm: bool = False) -> Path:
+def build_converter(use_llm: bool = False):
+    """Construct a PdfConverter (loads Marker's models — slow, ~30s).
+
+    Reuse the returned object across many PDFs to avoid reloading models.
+    """
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
-    from marker.output import text_from_rendered
 
     config: dict = {}
     llm_service: str | None = None
@@ -35,11 +38,17 @@ def convert(pdf_path: Path, output_dir: Path, use_llm: bool = False) -> Path:
         config["use_llm"] = True
         llm_service = "scripts.marker_sdk_service.ClaudeAgentSdkService"
 
-    converter = PdfConverter(
+    return PdfConverter(
         artifact_dict=create_model_dict(),
         config=config or None,
         llm_service=llm_service,
     )
+
+
+def convert_one(converter, pdf_path: Path, output_dir: Path) -> Path:
+    """Convert a single PDF using a pre-built converter. Returns the .md path."""
+    from marker.output import text_from_rendered
+
     rendered = converter(str(pdf_path))
     text, _ext, images = text_from_rendered(rendered)
 
@@ -58,6 +67,11 @@ def convert(pdf_path: Path, output_dir: Path, use_llm: bool = False) -> Path:
 
     md_path.write_text(text, encoding="utf-8")
     return md_path
+
+
+def convert(pdf_path: Path, output_dir: Path, use_llm: bool = False) -> Path:
+    """Build a converter and process one PDF. Convenience wrapper for single-shot use."""
+    return convert_one(build_converter(use_llm), pdf_path, output_dir)
 
 
 def main():

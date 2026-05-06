@@ -22,3 +22,4 @@ benchmark/mrag_bench/__pycache__/plot_results.cpython-311.pyc
 datasets/
 *.pyc
 temp/
+.env
