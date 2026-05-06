@@ -53,6 +53,7 @@ from weaviate.classes.config import Configure, DataType, Property
 COLLECTION_NAME = "Document"
 VOYAGE_MODEL = "voyage-context-3"
 VOYAGE_DIM = 1024  # voyage-context-3 default; also supports 256 / 512 / 2048
+VOYAGE_DOC_TOKEN_LIMIT = 30000  # margin under voyage-context-3's 32K per-doc cap
 IMAGE_REF_RE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
 
 
@@ -89,17 +90,50 @@ def extract_image_paths(content: str) -> list[str]:
     return IMAGE_REF_RE.findall(content)
 
 
+def split_for_token_limit(
+    vo: voyageai.Client, chunks: list[str], limit: int = VOYAGE_DOC_TOKEN_LIMIT
+) -> list[list[str]]:
+    """Greedy-pack chunks into sub-batches each ≤ `limit` tokens.
+
+    voyage-context-3 caps a single contextualized_embed input at 32K tokens.
+    Long documents must be split; chunks within a sub-batch share document
+    context, chunks across sub-batches do not.
+    """
+    counts = [vo.count_tokens([c], model=VOYAGE_MODEL) for c in chunks]
+    batches: list[list[str]] = []
+    cur: list[str] = []
+    cur_tokens = 0
+    for chunk, n in zip(chunks, counts):
+        if n > limit:
+            logger.warning("  Single chunk exceeds %d tokens (%d); voyage will reject.", limit, n)
+        if cur and cur_tokens + n > limit:
+            batches.append(cur)
+            cur, cur_tokens = [], 0
+        cur.append(chunk)
+        cur_tokens += n
+    if cur:
+        batches.append(cur)
+    return batches
+
+
 def embed_document(vo: voyageai.Client, chunks: list[str]) -> list[list[float]]:
-    """One Voyage call for a whole document. Returns one vector per chunk."""
-    result = vo.contextualized_embed(
-        inputs=[chunks],
-        model=VOYAGE_MODEL,
-        input_type="document",
-        output_dimension=VOYAGE_DIM,
-    )
-    # ContextualizedEmbeddingsObject: results is a list (one per input doc); each
-    # has `.embeddings` — a list of per-chunk vectors.
-    return result.results[0].embeddings
+    """Voyage embedding for a whole document, split as needed for the 32K cap.
+
+    Returns one vector per input chunk (in input order).
+    """
+    sub_batches = split_for_token_limit(vo, chunks)
+    if len(sub_batches) > 1:
+        logger.info("  Splitting into %d sub-batches for voyage's 32K context cap.", len(sub_batches))
+    vectors: list[list[float]] = []
+    for sub in sub_batches:
+        result = vo.contextualized_embed(
+            inputs=[sub],
+            model=VOYAGE_MODEL,
+            input_type="document",
+            output_dimension=VOYAGE_DIM,
+        )
+        vectors.extend(result.results[0].embeddings)
+    return vectors
 
 
 def ingest_file(

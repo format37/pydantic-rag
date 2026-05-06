@@ -110,6 +110,9 @@ async def run(pdf: Path, md: Path) -> None:
         system_prompt=SYSTEM_PROMPT,
         max_turns=80,
         cwd=str(md.resolve().parent),
+        # Reading multi-page PDFs returns image tokens whose JSON-encoded
+        # tool result can exceed the SDK's default 1 MB buffer. Bump high.
+        max_buffer_size=64 * 1024 * 1024,
     )
 
     user_prompt = USER_PROMPT_TMPL.format(pdf=pdf.resolve(), md=md.resolve())
