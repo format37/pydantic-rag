@@ -48,6 +48,7 @@ from scripts.ingest import ChunkInfo, chunk_text, estimate_tokens, read_text_fil
 import voyageai
 import weaviate
 from weaviate.classes.config import Configure, DataType, Property
+from weaviate.classes.query import Filter
 
 
 COLLECTION_NAME = "Document"
@@ -142,6 +143,7 @@ def ingest_file(
     filepath: Path,
     documents_dir: Path,
     name: str,
+    replace_existing: bool = False,
 ) -> int:
     rel_path = filepath.relative_to(documents_dir)
     folder = str(rel_path.parent) if rel_path.parent != Path(".") else ""
@@ -153,6 +155,15 @@ def ingest_file(
         return 0
 
     logger.info("  %d chunks (%d est. tokens)", len(chunks), estimate_tokens(text))
+
+    if replace_existing:
+        collection = client.collections.get(COLLECTION_NAME)
+        delete_result = collection.data.delete_many(
+            where=Filter.by_property("source").equal(str(rel_path))
+        )
+        cleared = getattr(delete_result, "successful", 0)
+        if cleared:
+            logger.info("  Cleared %d existing chunks (source=%s).", cleared, rel_path)
 
     t0 = time.monotonic()
     vectors = embed_document(vo, [c.content for c in chunks])
@@ -218,6 +229,12 @@ def main():
         default=".md",
         help="Comma-separated extensions to ingest (default: .md).",
     )
+    parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Before inserting each file's chunks, delete any existing chunks "
+        "whose `source` field matches its relative path. Makes re-runs idempotent.",
+    )
     args = parser.parse_args()
 
     if not os.environ.get("VOYAGEAI_API_KEY"):
@@ -262,7 +279,10 @@ def main():
         for i, f in enumerate(files, 1):
             logger.info("[%d/%d] %s", i, len(files), f.relative_to(args.documents_dir))
             try:
-                total += ingest_file(client, vo, f, args.documents_dir, args.name)
+                total += ingest_file(
+                    client, vo, f, args.documents_dir, args.name,
+                    replace_existing=args.replace_existing,
+                )
             except Exception as exc:
                 logger.error("  Failed: %s", exc)
         logger.info("Ingestion complete: %d chunks stored.", total)
