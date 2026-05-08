@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -29,6 +30,10 @@ from claude_agent_sdk import (
     ToolUseBlock,
     query,
 )
+
+# pypdf prints "Ignoring wrong pointing object" warnings for minor PDF
+# structural quirks. Harmless, but noisy for large books.
+logging.getLogger("pypdf").setLevel(logging.ERROR)
 
 
 SYSTEM_PROMPT = """\
@@ -132,7 +137,7 @@ async def run(
     start_page: int | None = None,
     end_page: int | None = None,
     total_pages: int | None = None,
-) -> None:
+) -> dict:
     options = ClaudeAgentOptions(
         allowed_tools=["Read", "Edit", "Grep"],
         permission_mode="bypassPermissions",
@@ -156,21 +161,37 @@ async def run(
         user_prompt = USER_PROMPT_TMPL.format(pdf=pdf.resolve(), md=md.resolve())
 
     edit_count = 0
-    async for message in query(prompt=user_prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for blk in message.content:
-                if isinstance(blk, TextBlock):
-                    text = blk.text.strip()
-                    if text:
-                        print(text)
-                elif isinstance(blk, ToolUseBlock):
-                    if blk.name == "Edit":
-                        edit_count += 1
-                    print(f"[{blk.name}]", flush=True)
-        elif isinstance(message, ResultMessage):
-            cost = getattr(message, "total_cost_usd", None)
-            tag = f"cost: ${cost:.4f}" if cost is not None else "cost: n/a"
-            print(f"\n--- {edit_count} edits applied; {tag} ---")
+    batch_cost = 0.0
+    saw_result = False
+    try:
+        async for message in query(prompt=user_prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for blk in message.content:
+                    if isinstance(blk, TextBlock):
+                        text = blk.text.strip()
+                        if text:
+                            print(text)
+                    elif isinstance(blk, ToolUseBlock):
+                        if blk.name == "Edit":
+                            edit_count += 1
+                        print(f"[{blk.name}]", flush=True)
+            elif isinstance(message, ResultMessage):
+                saw_result = True
+                cost = getattr(message, "total_cost_usd", None)
+                if cost is not None:
+                    batch_cost = float(cost)
+                tag = f"cost: ${cost:.4f}" if cost is not None else "cost: n/a"
+                print(f"\n--- {edit_count} edits applied; {tag} ---")
+    except Exception as exc:
+        # The claude CLI sometimes emits a non-zero exit error AFTER delivering
+        # the ResultMessage. If we already received the result, the edits are
+        # in and we should not crash the outer batch loop.
+        if saw_result:
+            print(f"  [note] SDK post-completion error swallowed: {exc}", file=sys.stderr)
+        else:
+            raise
+
+    return {"edits": edit_count, "cost": batch_cost}
 
 
 def _pdf_page_count(pdf: Path) -> int:
@@ -211,19 +232,38 @@ def main():
     start = max(1, args.start_page)
     batch = max(1, args.batch_pages)
 
+    total_edits = 0
+    total_cost = 0.0
+
     while start <= total:
         end = min(start + batch - 1, total)
         print(f"\n=== Cleanup batch: pages {start}-{end} of {total} ===")
-        anyio.run(run, args.pdf, args.md, start, end, total)
+        try:
+            stats = anyio.run(run, args.pdf, args.md, start, end, total)
+            total_edits += stats.get("edits", 0)
+            total_cost += stats.get("cost", 0.0)
+        except Exception as exc:
+            print(
+                f"\n[error] Batch pages {start}-{end} failed before completion: {exc}\n"
+                f"  Resume with: --start-page {start} --batch-pages {batch}",
+                file=sys.stderr,
+            )
+            break
 
         if end >= total:
-            print(f"\nAll {total} pages processed.")
+            print(
+                f"\nAll {total} pages processed. "
+                f"Cumulative: {total_edits} edits, ${total_cost:.4f}."
+            )
             break
 
         next_start = end + 1
+        remaining = total - end
         try:
             ans = input(
-                f"\nNext batch starts at page {next_start} (of {total}).\n"
+                f"\nProgress: pages 1-{end}/{total} done — "
+                f"{total_edits} edits total, ${total_cost:.4f} spent.\n"
+                f"Next batch starts at page {next_start} ({remaining} remaining).\n"
                 f"  [Enter]   continue with batch size {batch}\n"
                 f"  [number]  continue with a new batch size\n"
                 f"  [n / Ctrl-D]  stop\n"
