@@ -129,6 +129,9 @@ class ClaudeAgentSdkService(BaseService):
                 ),
                 max_turns=self.sdk_max_turns,
                 cwd=str(tmp),
+                # Region images and their JSON encoding can exceed the SDK's
+                # 1 MB default buffer on math-heavy pages.
+                max_buffer_size=64 * 1024 * 1024,
                 **({"model": self.sdk_model} if self.sdk_model else {}),
             )
 
