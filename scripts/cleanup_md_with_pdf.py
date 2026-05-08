@@ -103,7 +103,36 @@ with a concise change-summary.
 """
 
 
-async def run(pdf: Path, md: Path) -> None:
+USER_PROMPT_BATCH_TMPL = """\
+Reconcile a *page range* of the markdown against the source PDF. Patch only
+residual conversion errors per the residue classes in your system prompt, and
+**only within the markdown section that corresponds to the given page range**.
+
+PDF:               {pdf}
+Markdown:          {md}
+Page range:        {start}–{end} (1-indexed) of {total} total PDF pages
+
+Process:
+1. Read the markdown. Use Grep to find `<span id="page-N-` anchor markers.
+   Verify the anchor's indexing convention by spot-checking one anchor against
+   the PDF (Marker's anchors may be 0- or 1-indexed depending on the document).
+2. From the anchors, identify the markdown line range that corresponds to PDF
+   pages {start}–{end}.
+3. Read the relevant PDF pages (`Read` accepts at most 20 pages per call —
+   make multiple calls for larger ranges).
+4. Edit ONLY within that markdown line range. Do not touch content outside it.
+5. End with a concise summary listing the line-range you scoped to, fixes
+   applied per residue class, and anything you deliberately skipped.
+"""
+
+
+async def run(
+    pdf: Path,
+    md: Path,
+    start_page: int | None = None,
+    end_page: int | None = None,
+    total_pages: int | None = None,
+) -> None:
     options = ClaudeAgentOptions(
         allowed_tools=["Read", "Edit", "Grep"],
         permission_mode="bypassPermissions",
@@ -115,7 +144,16 @@ async def run(pdf: Path, md: Path) -> None:
         max_buffer_size=64 * 1024 * 1024,
     )
 
-    user_prompt = USER_PROMPT_TMPL.format(pdf=pdf.resolve(), md=md.resolve())
+    if start_page is not None and end_page is not None:
+        user_prompt = USER_PROMPT_BATCH_TMPL.format(
+            pdf=pdf.resolve(),
+            md=md.resolve(),
+            start=start_page,
+            end=end_page,
+            total=total_pages or "?",
+        )
+    else:
+        user_prompt = USER_PROMPT_TMPL.format(pdf=pdf.resolve(), md=md.resolve())
 
     edit_count = 0
     async for message in query(prompt=user_prompt, options=options):
@@ -135,10 +173,29 @@ async def run(pdf: Path, md: Path) -> None:
             print(f"\n--- {edit_count} edits applied; {tag} ---")
 
 
+def _pdf_page_count(pdf: Path) -> int:
+    from pypdf import PdfReader
+    return len(PdfReader(pdf).pages)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("pdf", type=Path, help="Source PDF")
     parser.add_argument("md", type=Path, help="Marker-generated markdown to clean up")
+    parser.add_argument(
+        "--batch-pages",
+        type=int,
+        default=None,
+        help="Cleanup PDF pages in batches of N. Without this flag, the agent "
+        "walks the whole document at once (best for ≤100-page docs). With it, "
+        "you'll be prompted between batches and can adjust the size on the fly.",
+    )
+    parser.add_argument(
+        "--start-page",
+        type=int,
+        default=1,
+        help="First page (1-indexed) to process when --batch-pages is set.",
+    )
     args = parser.parse_args()
 
     if not args.pdf.is_file():
@@ -146,7 +203,49 @@ def main():
     if not args.md.is_file():
         sys.exit(f"Markdown not found: {args.md}")
 
-    anyio.run(run, args.pdf, args.md)
+    if args.batch_pages is None:
+        anyio.run(run, args.pdf, args.md)
+        return
+
+    total = _pdf_page_count(args.pdf)
+    start = max(1, args.start_page)
+    batch = max(1, args.batch_pages)
+
+    while start <= total:
+        end = min(start + batch - 1, total)
+        print(f"\n=== Cleanup batch: pages {start}-{end} of {total} ===")
+        anyio.run(run, args.pdf, args.md, start, end, total)
+
+        if end >= total:
+            print(f"\nAll {total} pages processed.")
+            break
+
+        next_start = end + 1
+        try:
+            ans = input(
+                f"\nNext batch starts at page {next_start} (of {total}).\n"
+                f"  [Enter]   continue with batch size {batch}\n"
+                f"  [number]  continue with a new batch size\n"
+                f"  [n / Ctrl-D]  stop\n"
+                f"> "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+
+        if ans.lower() in {"n", "no", "stop", "q", "quit"}:
+            print(
+                f"\nStopped at page {end}. Resume with:\n"
+                f"  --start-page {next_start} --batch-pages {batch}"
+            )
+            break
+
+        if ans:
+            try:
+                batch = max(1, int(ans))
+            except ValueError:
+                print(f"  (couldn't parse '{ans}', keeping batch size {batch})")
+
+        start = next_start
 
 
 if __name__ == "__main__":

@@ -168,6 +168,22 @@ cleanup agent has Read + Edit + Grep tools and only patches confirmed residue
 classes; it does not rewrite prose. Typical cost on a 17-page paper: ~$1 of
 SDK-reported quota usage.
 
+**Long PDFs (≥~150 pages)**: skip `--cleanup` in `batch_convert.py` (pass 2 is
+likely to exhaust your Max quota before finishing) and run pass 2 separately
+in interactive batches:
+
+```bash
+python scripts/cleanup_md_with_pdf.py datasets/RL/big-book.pdf \
+    data/documents/RL/big-book.md \
+    --batch-pages 100
+```
+
+You'll be prompted between batches: `[Enter]` keeps the same size, a number
+sets a new size for the next batch, `n` stops. The agent scopes each batch to
+the markdown section corresponding to that PDF page range. Resume later with
+`--start-page <next>` if you stop early. After the cleanup is complete,
+re-ingest the file with `--replace-existing` to refresh its embeddings.
+
 ### Removing a single document from the corpus
 
 To delete all chunks for one file without re-ingesting the whole set, filter by `name` (the document set) and `source` (path relative to `--documents-dir`):
