@@ -156,6 +156,10 @@ python scripts/convert_pdf.py datasets/RL/foo.pdf --output-dir data/documents/RL
 python scripts/convert_pdf.py datasets/RL/foo.pdf \
     --output-dir data/documents/RL \
     --use-llm --cleanup
+
+# Whole folder, in one go. Loads Marker models once and loops, so the
+# ~30s startup cost is amortized.
+python scripts/batch_convert.py datasets/RL --output-dir data/documents/RL --use-llm --cleanup
 ```
 
 Output layout: `<output-dir>/<stem>.md` plus a sibling `<output-dir>/<stem>/`
@@ -168,21 +172,87 @@ cleanup agent has Read + Edit + Grep tools and only patches confirmed residue
 classes; it does not rewrite prose. Typical cost on a 17-page paper: ~$1 of
 SDK-reported quota usage.
 
-**Long PDFs (≥~150 pages)**: skip `--cleanup` in `batch_convert.py` (pass 2 is
-likely to exhaust your Max quota before finishing) and run pass 2 separately
-in interactive batches:
+#### Big PDFs (≥~150 pages)
+
+Pass 2's whole-doc cleanup will exhaust your Max quota on big books before it
+finishes. The fix is to drop `--cleanup` from `batch_convert.py` / `convert_pdf.py`
+and run pass 2 separately in **interactive page-range batches**, then refresh
+embeddings each time you make progress.
+
+**Single big PDF** (e.g. a 540-page textbook):
 
 ```bash
+# 1. Pass 1 only (Marker --use_llm). ~30-50 min for a 500-page book.
+python scripts/convert_pdf.py datasets/RL/big-book.pdf \
+    --output-dir data/documents/RL \
+    --use-llm
+#    Note: you'll see "SDK call failed" lines from Marker's per-block LLM
+#    polish — these are non-fatal; Marker falls back to non-LLM output for
+#    the affected blocks. The structural conversion completes anyway.
+
+# 2. Ingest immediately so the RAG sees the new content right away.
+mkdir -p /tmp/ingest && \
+  ln -sf "$(realpath data/documents/RL/big-book.md)" /tmp/ingest/ && \
+  python scripts/ingest_voyage.py --name "RL" --documents-dir /tmp/ingest --replace-existing
+
+# 3. Pass 2 batched cleanup. Interactive — prompts between batches.
 python scripts/cleanup_md_with_pdf.py datasets/RL/big-book.pdf \
     data/documents/RL/big-book.md \
     --batch-pages 100
+
+#    You'll see, after each batch:
+#      Progress: pages 1-100/541 done — 7 edits total, $1.74 spent.
+#      Next batch starts at page 101 (441 remaining).
+#        [Enter]   continue with batch size 100
+#        [number]  continue with a new batch size
+#        [n / Ctrl-D]  stop
+#    Stopping early prints a resume command:
+#      --start-page <N> --batch-pages <N>
+
+# 4. Re-ingest after cleanup (or after each major chunk of progress) to
+#    refresh embeddings against the latest markdown.
+python scripts/ingest_voyage.py --name "RL" --documents-dir /tmp/ingest --replace-existing
 ```
 
-You'll be prompted between batches: `[Enter]` keeps the same size, a number
-sets a new size for the next batch, `n` stops. The agent scopes each batch to
-the markdown section corresponding to that PDF page range. Resume later with
-`--start-page <next>` if you stop early. After the cleanup is complete,
-re-ingest the file with `--replace-existing` to refresh its embeddings.
+**Multiple big PDFs in one folder**: run pass 1 over the folder once, ingest
+the lot, then loop pass 2 per file:
+
+```bash
+# 1. Pass 1 over the whole folder. No --cleanup.
+python scripts/batch_convert.py datasets/big-papers \
+    --output-dir data/documents/big-papers \
+    --use-llm
+
+# 2. Ingest the whole set in one go.
+python scripts/ingest_voyage.py --name "big-papers" \
+    --documents-dir data/documents/big-papers --replace-existing
+
+# 3. Pass 2 per PDF, interactively. Do them one at a time so you can adjust
+#    batch sizes and stop when quota gets tight.
+for pdf in datasets/big-papers/*.pdf; do
+    stem=$(basename "$pdf" .pdf)
+    python scripts/cleanup_md_with_pdf.py "$pdf" \
+        "data/documents/big-papers/${stem}.md" \
+        --batch-pages 100
+done
+
+# 4. Refresh embeddings for the whole set after each session of pass-2 work.
+python scripts/ingest_voyage.py --name "big-papers" \
+    --documents-dir data/documents/big-papers --replace-existing
+```
+
+You don't have to finish pass 2 in one sitting. Re-running step 4 at any
+point will re-embed whatever the markdown looks like *now* — so partial
+cleanups are safe to ship to the RAG and polish further later.
+
+If you have a folder mixing small (≤100pp) and big PDFs, the simplest split
+is: keep small ones in their own folder and run them with `--cleanup` in
+batch mode; keep big ones in another folder and use the per-file loop above.
+
+**Voyage-context-3 token cap**: voyage rejects single requests over 32K
+tokens. `ingest_voyage.py` auto-splits long documents into ≤30K-token
+sub-batches via `vo.count_tokens` — chunks within a sub-batch share document
+context, chunks across sub-batches do not. This is automatic; no flag needed.
 
 ### Removing a single document from the corpus
 
