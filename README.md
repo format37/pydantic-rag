@@ -276,6 +276,62 @@ finally:
 
 `source` is the path the file had during ingestion, relative to the `--documents-dir` you passed — e.g. for `python scripts/ingest.py --name algo-trading --documents-dir data/documents/algo-trading`, the source is just the filename. To preview before deleting, swap `delete_many` for `coll.aggregate.over_all(filters=flt, total_count=True)`.
 
+### Moving / merging document sets
+
+To move members between document sets — e.g. merge several sets into one, split one set in two, or rename — update the `name` property on the affected chunks. **The vectors are untouched, so this costs nothing in Voyage / Ollama embedding time.**
+
+**Merge several sets into one** (e.g. `RL`, `RL-2`, …, `RL-11` → `RL`):
+
+```python
+import weaviate
+
+client = weaviate.connect_to_local(host="localhost", port=8080, grpc_port=50051)
+try:
+    coll = client.collections.get("Document")
+    old_names = {f"RL-{i}" for i in range(2, 12)}    # sets to absorb
+    new_name = "RL"                                  # destination set
+
+    updated = 0
+    for obj in coll.iterator(include_vector=False, return_properties=["name"]):
+        if obj.properties.get("name") in old_names:
+            coll.data.update(uuid=obj.uuid, properties={"name": new_name})
+            updated += 1
+    print(f"renamed {updated} chunks")
+finally:
+    client.close()
+```
+
+**Move a single file into a different set** (e.g. one PDF from `RL` → `papers`):
+
+```python
+import weaviate
+from weaviate.classes.query import Filter
+
+client = weaviate.connect_to_local(host="localhost", port=8080, grpc_port=50051)
+try:
+    coll = client.collections.get("Document")
+    flt = (
+        Filter.by_property("name").equal("RL")
+        & Filter.by_property("source").equal("bello-2017-neural-combopt.md")
+    )
+    for obj in coll.query.fetch_objects(filters=flt, limit=10000).objects:
+        coll.data.update(uuid=obj.uuid, properties={"name": "papers"})
+finally:
+    client.close()
+```
+
+**Verify the result** — list distinct set names with chunk counts:
+
+```bash
+curl -s -X POST http://localhost:8080/v1/graphql -H "Content-Type: application/json" \
+  -d '{"query":"{ Aggregate { Document(groupBy: [\"name\"]) { meta { count } groupedBy { value } } } }"}' \
+  | python3 -m json.tool
+```
+
+Or to see distinct files within a set, swap `\"name\"` for `\"filename\"`.
+
+> Note: search-only MCP tools (`search_documents`) sample only the top-N chunks per query, so asking an agent "what's in this set?" can under-report — it sees only the chunks that matched the literal query. The aggregate query above is the authoritative listing.
+
 ### Telegram Export Ingestion
 
 To ingest Telegram chat exports (Telegram Desktop → Export chat history → JSON format):
