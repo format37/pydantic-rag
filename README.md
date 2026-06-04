@@ -174,21 +174,46 @@ SDK-reported quota usage.
 
 #### Big PDFs (≥~150 pages)
 
-Pass 2's whole-doc cleanup will exhaust your Max quota on big books before it
-finishes. The fix is to drop `--cleanup` from `batch_convert.py` / `convert_pdf.py`
-and run pass 2 separately in **interactive page-range batches**, then refresh
-embeddings each time you make progress.
+Two separate limits bite on big books:
 
-**Single big PDF** (e.g. a 540-page textbook):
+- **RAM.** Marker holds the *whole* document in memory at once (it renders
+  hi/low-res images for every page and runs model tensors across them), so a
+  many-hundred-page book can exhaust host RAM. With little swap this
+  **hard-freezes the machine** (kernel thrash) rather than failing cleanly.
+- **Quota.** Pass 2's whole-doc cleanup will exhaust your Max quota on big
+  books before it finishes.
+
+The fix for both is to work in **page-range batches**: Pass 1 via
+`batch_convert_book.py` (bounds peak RAM, with a memory fuse), and Pass 2 via
+`cleanup_md_with_pdf.py --batch-pages` (bounds quota). Refresh embeddings each
+time you make progress.
+
+**Single big PDF** (e.g. a 1000-page textbook):
 
 ```bash
-# 1. Pass 1 only (Marker --use_llm). ~30-50 min for a 500-page book.
-python scripts/convert_pdf.py datasets/RL/big-book.pdf \
-    --output-dir data/documents/RL \
-    --use-llm
-#    Note: you'll see "SDK call failed" lines from Marker's per-block LLM
-#    polish — these are non-fatal; Marker falls back to non-LLM output for
-#    the affected blocks. The structural conversion completes anyway.
+# 1. Pass 1 in page-range batches with a memory fuse (always --use-llm).
+#    First calibrate: probe 10 pages, measure peak RAM, get a batch-size
+#    suggestion. The probe's output is kept (appended to the master .md).
+python scripts/batch_convert_book.py datasets/RL/big-book.pdf \
+    --output-dir data/documents/RL --calibrate
+
+#    Then convert the rest. Each batch runs in its own subprocess; a watchdog
+#    samples free RAM and, if it drops below --mem-floor-gb (default 5), kills
+#    the batch's whole process tree BEFORE the machine thrashes, halves the
+#    batch size, and retries that range. Pages are covered exactly once.
+python scripts/batch_convert_book.py datasets/RL/big-book.pdf \
+    --output-dir data/documents/RL --batch-pages 50 --start-page 11
+#    Prompts between batches (adjust size / stop / resume with --start-page);
+#    the prompt prints the exact resume command for you.
+#    Use --yes to run a fixed range straight through. For quota pacing, cap a
+#    run with --end-page, then re-run from the next page. --start-page and
+#    --end-page are both 1-indexed inclusive against the source PDF, e.g.:
+#        ... --batch-pages 50 --start-page 11  --end-page 260   # pages 11-260
+#        ... --batch-pages 50 --start-page 261 --end-page 510   # next chunk
+#    --scan prints an instant structure-based batch hint without loading models.
+#
+#    Note: "SDK call failed" lines from Marker's per-block LLM polish are
+#    non-fatal — Marker falls back to non-LLM output for those blocks.
 
 # 2. Ingest immediately so the RAG sees the new content right away.
 mkdir -p /tmp/ingest && \
