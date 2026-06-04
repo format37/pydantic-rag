@@ -24,10 +24,28 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 
-def build_converter(use_llm: bool = False):
+def parse_page_range(spec: str) -> list[int]:
+    """Parse a 1-indexed inclusive 'A-B' (or single 'A') into 0-based page ids.
+
+    e.g. '1-50' -> [0, 1, ..., 49];  '7' -> [6].
+    """
+    spec = spec.strip()
+    if "-" in spec:
+        a, b = spec.split("-", 1)
+        start, end = int(a), int(b)
+    else:
+        start = end = int(spec)
+    if start < 1 or end < start:
+        raise ValueError(f"Invalid page range: {spec!r}")
+    return list(range(start - 1, end))
+
+
+def build_converter(use_llm: bool = False, page_range: list[int] | None = None):
     """Construct a PdfConverter (loads Marker's models — slow, ~30s).
 
     Reuse the returned object across many PDFs to avoid reloading models.
+    `page_range` is a list of 0-based page ids; when given, only those pages
+    are converted (bounds peak memory for very large PDFs).
     """
     from marker.converters.pdf import PdfConverter
     from marker.models import create_model_dict
@@ -37,6 +55,8 @@ def build_converter(use_llm: bool = False):
     if use_llm:
         config["use_llm"] = True
         llm_service = "scripts.marker_sdk_service.ClaudeAgentSdkService"
+    if page_range is not None:
+        config["page_range"] = page_range
 
     return PdfConverter(
         artifact_dict=create_model_dict(),
@@ -45,8 +65,15 @@ def build_converter(use_llm: bool = False):
     )
 
 
-def convert_one(converter, pdf_path: Path, output_dir: Path) -> Path:
-    """Convert a single PDF using a pre-built converter. Returns the .md path."""
+def convert_one(
+    converter, pdf_path: Path, output_dir: Path, md_name: str | None = None
+) -> Path:
+    """Convert a single PDF using a pre-built converter. Returns the .md path.
+
+    Images always land in the shared `<stem>/` folder (Marker names them by
+    global page id, so batches over disjoint page ranges never collide).
+    `md_name` overrides the markdown filename (used for per-batch partials).
+    """
     from marker.output import text_from_rendered
 
     rendered = converter(str(pdf_path))
@@ -54,7 +81,7 @@ def convert_one(converter, pdf_path: Path, output_dir: Path) -> Path:
 
     stem = pdf_path.stem
     output_dir.mkdir(parents=True, exist_ok=True)
-    md_path = output_dir / f"{stem}.md"
+    md_path = output_dir / (md_name or f"{stem}.md")
     images_dir = output_dir / stem
 
     if images:
@@ -69,9 +96,17 @@ def convert_one(converter, pdf_path: Path, output_dir: Path) -> Path:
     return md_path
 
 
-def convert(pdf_path: Path, output_dir: Path, use_llm: bool = False) -> Path:
+def convert(
+    pdf_path: Path,
+    output_dir: Path,
+    use_llm: bool = False,
+    page_range: list[int] | None = None,
+    md_name: str | None = None,
+) -> Path:
     """Build a converter and process one PDF. Convenience wrapper for single-shot use."""
-    return convert_one(build_converter(use_llm), pdf_path, output_dir)
+    return convert_one(
+        build_converter(use_llm, page_range), pdf_path, output_dir, md_name
+    )
 
 
 def main():
@@ -95,12 +130,33 @@ def main():
         "against the source PDF and fixes residual conversion errors "
         "(HTML <sup>/<sub>, detached minus signs, broken pseudocode, etc.).",
     )
+    parser.add_argument(
+        "--page-range",
+        type=str,
+        default=None,
+        help="Convert only pages A-B (1-indexed, inclusive), e.g. '1-50'. "
+        "Bounds peak memory for very large PDFs. Used as the per-batch worker "
+        "by batch_convert_book.py.",
+    )
+    parser.add_argument(
+        "--md-name",
+        type=str,
+        default=None,
+        help="Override the output markdown filename (used for per-batch partials).",
+    )
     args = parser.parse_args()
 
     if not args.pdf.is_file():
         sys.exit(f"PDF not found: {args.pdf}")
 
-    md_path = convert(args.pdf, args.output_dir, use_llm=args.use_llm)
+    page_range = parse_page_range(args.page_range) if args.page_range else None
+    md_path = convert(
+        args.pdf,
+        args.output_dir,
+        use_llm=args.use_llm,
+        page_range=page_range,
+        md_name=args.md_name,
+    )
     images_dir = args.output_dir / args.pdf.stem
     n_images = len(list(images_dir.iterdir())) if images_dir.exists() else 0
     n_chars = md_path.stat().st_size
