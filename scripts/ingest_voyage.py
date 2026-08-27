@@ -233,7 +233,7 @@ def main():
         "--documents-dir",
         type=Path,
         default=Path("data/documents"),
-        help="Folder of markdown files to ingest (recursive).",
+        help="Folder of documents to ingest (recursive), or a single file.",
     )
     parser.add_argument("--name", help="Document-set label stored on each chunk.")
     parser.add_argument(
@@ -280,25 +280,31 @@ def main():
 
         if not args.name:
             sys.exit("--name is required when ingesting")
-        if not args.documents_dir.is_dir():
+
+        if args.documents_dir.is_file():
+            # Single file passed directly: ingest just it, skip the extensions filter.
+            documents_dir = args.documents_dir.parent
+            files = [args.documents_dir]
+        elif args.documents_dir.is_dir():
+            documents_dir = args.documents_dir
+            files = sorted(
+                f for f in documents_dir.rglob("*")
+                if f.is_file() and f.suffix.lower() in extensions
+            )
+            if not files:
+                sys.exit(f"No files matching {extensions} in {documents_dir}")
+        else:
             sys.exit(f"--documents-dir not found: {args.documents_dir}")
 
         vo = voyageai.Client(api_key=os.environ["VOYAGEAI_API_KEY"])
 
-        files = sorted(
-            f for f in args.documents_dir.rglob("*")
-            if f.is_file() and f.suffix.lower() in extensions
-        )
-        if not files:
-            sys.exit(f"No files matching {extensions} in {args.documents_dir}")
-
         logger.info("Ingesting %d file(s) into '%s' as set '%s'.", len(files), COLLECTION_NAME, args.name)
         total = 0
         for i, f in enumerate(files, 1):
-            logger.info("[%d/%d] %s", i, len(files), f.relative_to(args.documents_dir))
+            logger.info("[%d/%d] %s", i, len(files), f.relative_to(documents_dir))
             try:
                 total += ingest_file(
-                    client, vo, f, args.documents_dir, args.name,
+                    client, vo, f, documents_dir, args.name,
                     replace_existing=args.replace_existing,
                 )
             except Exception as exc:
