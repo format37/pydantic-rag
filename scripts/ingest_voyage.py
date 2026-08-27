@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Ingest Markdown documents into Weaviate using voyage-context-3 embeddings.
+"""Ingest documents (.md/.txt/code, plus .pdf via pypdf) into Weaviate using
+voyage-context-3 embeddings.
 
 The Voyage `contextualized_embed` API takes a *list of chunk lists per document*
 and embeds each chunk conditioned on the full document — better than independent
@@ -43,7 +44,14 @@ setup_logging()
 logger = get_logger("scripts.ingest_voyage")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.ingest import ChunkInfo, chunk_text, estimate_tokens, read_text_file  # noqa: E402
+from scripts.ingest import (  # noqa: E402
+    ChunkInfo,
+    chunk_text,
+    estimate_tokens,
+    get_page_for_position,
+    read_pdf_file,
+    read_text_file,
+)
 
 import voyageai
 import weaviate
@@ -148,11 +156,20 @@ def ingest_file(
     rel_path = filepath.relative_to(documents_dir)
     folder = str(rel_path.parent) if rel_path.parent != Path(".") else ""
 
-    text = read_text_file(filepath)
+    page_boundaries = None
+    if filepath.suffix.lower() == ".pdf":
+        pdf_content = read_pdf_file(filepath)
+        text = pdf_content.text
+        page_boundaries = pdf_content.page_boundaries
+    else:
+        text = read_text_file(filepath)
     chunks: list[ChunkInfo] = list(chunk_text(text))
     if not chunks:
         logger.warning("  No chunks produced for %s", rel_path)
         return 0
+    if page_boundaries:
+        for c in chunks:
+            c.page_number = get_page_for_position(page_boundaries, c.start_char)
 
     logger.info("  %d chunks (%d est. tokens)", len(chunks), estimate_tokens(text))
 
@@ -188,7 +205,7 @@ def ingest_file(
                     "source": str(rel_path),
                     "name": name,
                     "chunk_index": chunk.chunk_index,
-                    "file_type": "text",
+                    "file_type": "pdf" if page_boundaries else "text",
                     "start_char": chunk.start_char,
                     "end_char": chunk.end_char,
                     "start_line": chunk.start_line,
@@ -227,7 +244,8 @@ def main():
     parser.add_argument(
         "--extensions",
         default=".md",
-        help="Comma-separated extensions to ingest (default: .md).",
+        help="Comma-separated extensions to ingest (default: .md). "
+        "PDFs are extracted with pypdf, e.g. --extensions .md,.txt,.pdf",
     )
     parser.add_argument(
         "--replace-existing",
